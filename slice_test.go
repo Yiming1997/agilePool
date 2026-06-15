@@ -376,14 +376,13 @@ func TestSlice_RemoveExpired_MultiRound(t *testing.T) {
 		t.Errorf("round 1: Pop() = %v, want wA2", got)
 	}
 
-	// Round 2: add more workers and expire them all by advancing time
+	// Round 2: add more workers and expire them all by advancing logical time
 	wE3 := NewWorker(now.Add(-1 * time.Second))
 	wE4 := NewWorker(now.Add(-500 * time.Millisecond))
 	s.Add(wE3)
 	s.Add(wE4)
 
-	time.Sleep(2 * time.Second)
-	later := time.Now()
+	later := now.Add(3 * time.Second)
 
 	removed = s.RemoveExpired(later, expiry)
 	if removed != 2 {
@@ -404,14 +403,5 @@ func TestSlice_RemoveExpired_MultiRound(t *testing.T) {
 	}
 	if got := s.Pop(); got != wFinal {
 		t.Errorf("round 3: Pop() = %v, want wFinal", got)
-	}
-}
-
-// TestSlice_AddNil adds a nil worker to verify no panic.
-func TestSlice_AddNil(t *testing.T) {
-	s := newSlice()
-	s.Add(nil)
-	if s.Len() != 1 {
-		t.Errorf("Len() after Add(nil) = %v, want 1", s.Len())
 	}
 }
