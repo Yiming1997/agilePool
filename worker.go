@@ -53,8 +53,7 @@ loop:
 			w.runTask(task)
 
 		default:
-			// Try taskBuf before the second channel check so workers
-			// drain the primary queue directly without a drainer goroutine.
+			// Try the chunked buffer before the second channel check.
 			// Grab a batch of up to 8 tasks per lock acquisition to
 			// amortise the mutex overhead across multiple tasks and
 			// reduce contention with the submission path.
@@ -62,9 +61,12 @@ loop:
 			var batch [batchSize]Task
 			n := 0
 			w.pool.taskMu.Lock()
-			for n < batchSize && len(w.pool.taskBuf) > 0 {
-				batch[n] = w.pool.taskBuf[0]
-				w.pool.taskBuf = w.pool.taskBuf[1:]
+			for n < batchSize {
+				t, ok := w.pool.popHead()
+				if !ok {
+					break
+				}
+				batch[n] = t
 				n++
 			}
 			w.pool.taskMu.Unlock()

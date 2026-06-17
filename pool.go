@@ -26,6 +26,11 @@ const (
 	// taskBuf for the bulk of queued tasks, so channel capacity does not
 	// couple memory usage or scaler behaviour to the queue-size setting.
 	internalTaskQueueCap = 64
+
+	// taskChunkSize is the number of Task slots per chunk in the linked-list
+	// buffer. Small, fixed-size chunks avoid the ~2× memory overhead of a
+	// single dynamically-growing slice and reduce GC pressure.
+	taskChunkSize = 4096
 )
 
 type WorkMode int8
@@ -58,6 +63,15 @@ func GetDefaultPool() *Pool {
 	return p
 }
 
+// taskChunk is a fixed-size node in the linked-list task buffer.
+// Each chunk holds up to taskChunkSize Task values. Using small,
+// fixed-size nodes avoids the doubling overhead of a single slice
+// and makes GC work with smaller, independently collectable objects.
+type taskChunk struct {
+	tasks [taskChunkSize]Task
+	next  *taskChunk
+}
+
 type Pool struct {
 	taskQueue         chan Task
 	closePoolCn       chan struct{}
@@ -76,9 +90,13 @@ type Pool struct {
 	// use GetRunningWorkersNum().
 	workerCreateCount int64
 
-	// ---- task queue (small handoff channel + dynamically-grown buffer) ----
-	taskBuf        []Task     // primary queue, grows on demand
-	taskMu         sync.Mutex // protects taskBuf
+	// ---- task queue (small handoff channel + chunked linked-list buffer) ----
+	headChunk      *taskChunk // head of linked-list buffer (where workers pop)
+	tailChunk      *taskChunk // tail of linked-list buffer (where submitters push)
+	headIdx        int        // pop index within headChunk
+	tailIdx        int        // push index within tailChunk
+	chunkLen       int64      // total tasks across all chunks (replaces len(taskBuf))
+	taskMu         sync.Mutex // protects the chunked buffer
 	overflowClosed bool       // prevents spool after Close
 
 	// ---- rate statistics for adaptive scaling ----
@@ -103,7 +121,6 @@ func NewPool(c *Config) *Pool {
 		logger:      log.Default(),
 		capacity:    c.workerNumCapacity,
 		taskQueue:   make(chan Task, internalTaskQueueCap),
-		taskBuf:     make([]Task, 0, 64),
 	}
 
 	switch c.idleContainerType {
@@ -201,26 +218,80 @@ func (p *Pool) submit(ctx context.Context, task Task) {
 	default:
 	}
 
-	// Channel full -> spool to overflow (never blocks the caller).
+	// Channel full -> spool to chunked buffer.
 	p.taskMu.Lock()
 	if p.overflowClosed {
 		p.taskMu.Unlock()
 		p.wg.Done()
 		return
 	}
-	p.taskBuf = append(p.taskBuf, task)
-	// Try to forward head of buf to the handoff channel — this wakes
-	// a polling worker immediately without waiting for the next scaler
-	// tick. If the channel is still full a worker is already busy and
-	// will check buf on its next poll iteration.
-	if len(p.taskBuf) > 0 {
+	p.pushTail(task)
+	// Forward: pop from head and try to send to handoff channel.
+	// This wakes a polling worker immediately without waiting for
+	// the next scaler tick. If the channel is full the task is
+	// re-queued at the tail — workers drain chunks anyway.
+	if t, ok := p.popHead(); ok {
 		select {
-		case p.taskQueue <- p.taskBuf[0]:
-			p.taskBuf = p.taskBuf[1:]
+		case p.taskQueue <- t:
 		default:
+			p.pushTail(t) // channel full, return to queue
 		}
 	}
 	p.taskMu.Unlock()
+}
+
+// pushTail appends a task to the tail of the chunked buffer.
+// Must be called with taskMu held.
+func (p *Pool) pushTail(task Task) {
+	if p.tailChunk == nil {
+		c := &taskChunk{}
+		p.tailChunk = c
+		p.headChunk = c
+		p.tailIdx = 0
+		p.headIdx = 0
+	} else if p.tailIdx >= taskChunkSize {
+		c := &taskChunk{}
+		p.tailChunk.next = c
+		p.tailChunk = c
+		p.tailIdx = 0
+	}
+	p.tailChunk.tasks[p.tailIdx] = task
+	p.tailIdx++
+	p.chunkLen++
+}
+
+// popHead removes and returns the task at the head of the chunked buffer.
+// Returns nil, false if the buffer is empty.
+// Must be called with taskMu held.
+func (p *Pool) popHead() (Task, bool) {
+	if p.headChunk == nil {
+		return nil, false
+	}
+	if p.headIdx >= taskChunkSize {
+		// Advance to next chunk; let GC collect the exhausted one.
+		next := p.headChunk.next
+		p.headChunk.next = nil
+		p.headChunk = next
+		p.headIdx = 0
+		if p.headChunk == nil {
+			p.tailChunk = nil
+			p.tailIdx = 0
+			return nil, false
+		}
+	}
+	// Head caught up to tail in the same chunk → queue drained.
+	if p.headChunk == p.tailChunk && p.headIdx >= p.tailIdx {
+		p.headChunk = nil
+		p.tailChunk = nil
+		p.headIdx = 0
+		p.tailIdx = 0
+		return nil, false
+	}
+	task := p.headChunk.tasks[p.headIdx]
+	p.headChunk.tasks[p.headIdx] = nil // help GC
+	p.headIdx++
+	p.chunkLen--
+	return task, true
 }
 
 type contextTask struct {
@@ -333,9 +404,9 @@ func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
 	running := atomic.LoadInt64(&p.runningWorkersNum)
 
-	// Read buf depth under its lock so the scaler sees task backlog.
+	// Read chunkLen under its lock so the scaler sees task backlog.
 	p.taskMu.Lock()
-	bufDepth := int64(len(p.taskBuf))
+	bufDepth := p.chunkLen
 	p.taskMu.Unlock()
 
 	// totalBacklog sums buf (primary queue) and channel occupancy.
