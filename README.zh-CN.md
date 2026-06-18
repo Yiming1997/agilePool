@@ -13,7 +13,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Yiming1997/agilePool" alt="License"></a>
 </p>
 
-[English](README.md)
+[English](readme.md)
 
 `agilePool` 是一个高性能 Go goroutine 池。核心亮点是**基于滑动窗口速率统计的自适应扩缩容**（adaptive scaler），配合有界并发、空闲 worker 复用、无界任务缓冲（带背压）、可重试任务和优雅关闭——适合需要提交海量小型异步任务、同时又不希望无限制创建 goroutine 的应用。
 
