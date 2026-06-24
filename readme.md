@@ -245,6 +245,10 @@ pool.SetLogger(log.Default())       // stdlib
 pool.SetLogger(zapLogger.Sugar())   // zap
 ```
 
+## Benchmark
+
+A comprehensive benchmark suite comparing agilePool against other popular Go goroutine pools is available at [agilePool-benchmark](https://github.com/Yiming1997/agilePool-benchmark).
+
 ## Acknowledgments
 
 The adaptive scaler design draws inspiration from [Little's Law](https://en.wikipedia.org/wiki/Little%27s_law) — special thanks to [@knowledge404](https://github.com/a3141294854) for the insightful suggestion of applying queuing theory to worker pool auto-scaling.

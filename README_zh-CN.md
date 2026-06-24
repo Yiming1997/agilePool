@@ -245,6 +245,10 @@ pool.SetLogger(log.Default())       // 标准库
 pool.SetLogger(zapLogger.Sugar())   // zap
 ```
 
+## 基准测试
+
+完整的基准测试套件对比了 agilePool 与其他主流 Go goroutine 池的性能表现，详见 [agilePool-benchmark](https://github.com/Yiming1997/agilePool-benchmark)。
+
 ## 致谢
 
 自适应扩缩容算法的设计灵感来源于 [Little's Law](https://en.wikipedia.org/wiki/Little%27s_law) 排队论——特别感谢 [@knowledge404](https://github.com/a3141294854) 提出的将排队论应用于 worker pool 自动扩缩容的宝贵建议。
