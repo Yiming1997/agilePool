@@ -596,7 +596,7 @@ func (p *Pool) GetWorkerCreateCount() int64 {
 // up by a worker. This is a snapshot of len(taskQueue) and does not
 // include tasks waiting in the chunked overflow buffer.
 func (p *Pool) GetTaskQueueLen() int {
-	// 获取未进入队列的任务(提交但是未执行)
+	// Returns the number of tasks that have been submitted but not yet enqueued for execution.
 	return len(p.taskQueue)
 }
 
@@ -604,15 +604,14 @@ func (p *Pool) GetTaskQueueLen() int {
 // the idle container, waiting to be reused. These workers are not
 // actively processing tasks.
 func (p *Pool) GetIdleWorkerCount() int64 {
-	//获取空闲worker数量
+	// Returns the current number of idle workers available for task assignment.
 	return p.idleWorks.Len()
 }
 
-// 获取上限,使用函数显得更专业
+// GetCapacity returns the maximum number of workers that the pool can
+// create and maintain concurrently. This value is set during pool
+// initialization and remains constant throughout the pool's lifecycle.
+// Using a getter function provides a more idiomatic and professional API.
 func (p *Pool) GetCapacity() int64 {
 	return p.capacity
-}
-
-func (p *Pool) GetSubmitCount() int64 { //返回每次每个窗口的提交次数
-	return p.submitCount
 }
