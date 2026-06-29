@@ -120,7 +120,9 @@ func (w *worker) runTask(task Task) {
 
 	// Extract timing context to trigger queue wait duration recording
 	if ct, ok := task.(*contextTask); ok {
-		sendCtx := context.WithValue(ct.countInfo, StartedAt, time.Now())
+		ct.countInfo.mu.Lock()
+		defer ct.countInfo.mu.Unlock() //虽然这样显得多次一举(毕竟任务不可能在提交之前就运行),但是还是为了避免严格的数据竞争审查.
+		sendCtx := context.WithValue(ct.countInfo.Context, StartedAt, time.Now())
 		// Create a new context to avoid data race with submit() - never modify ct.countInfo directly
 		defer func() { // Record completion time at the end
 			sendCtx = context.WithValue(sendCtx, CompletedAt, time.Now())

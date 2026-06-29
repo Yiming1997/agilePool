@@ -1,4 +1,4 @@
-package agilepool
+﻿package agilepool
 
 import (
 	"context"
@@ -214,8 +214,14 @@ func (p *Pool) submit(ctx context.Context, task Task) {
 	// Stamp submit time and propagate the timing context to contextTask
 	// so workers can read it via task.(*contextTask).countInfo.
 	if ct, ok := task.(*contextTask); ok {
+		//协程写入: initialise countInfo before locking (nil from SubmitCtx).
+		if ct.countInfo == nil {
+			ct.countInfo = &countInfo{}
+		}
+		ct.countInfo.mu.Lock()
+		defer ct.countInfo.mu.Unlock()
 		ctx = context.WithValue(context.Background(), SubmittedAt, time.Now()) // Create a fresh context from context.Background() for timing stats only, avoiding data races on the caller's context
-		ct.countInfo = ctx
+		ct.countInfo.Context = ctx
 	}
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return
@@ -237,7 +243,7 @@ func (p *Pool) submit(ctx context.Context, task Task) {
 		case p.taskQueue <- task:
 			if ct, ok := task.(*contextTask); ok {
 				ctx = context.WithValue(ctx, EnqueuedAt, time.Now()) // Update enqueue time inside the select branch; only one goroutine touches this stats ctx, no extra sync needed
-				ct.countInfo = ctx
+				ct.countInfo.Context = ctx
 			}
 		default:
 			p.done()
@@ -251,7 +257,7 @@ func (p *Pool) submit(ctx context.Context, task Task) {
 		// Fast-path success: stamp enqueue time.
 		ctx = context.WithValue(ctx, EnqueuedAt, time.Now()) // Same as above: stamp enqueue time in the fast-path select branch
 		if ct, ok := task.(*contextTask); ok {
-			ct.countInfo = ctx
+			ct.countInfo.Context = ctx
 		}
 		return
 	default:
@@ -353,7 +359,14 @@ func (p *Pool) popHead() (Task, bool) {
 type contextTask struct {
 	ctx       context.Context
 	task      Task
-	countInfo context.Context // Standalone context for timing stats only, maintained internally; callers must not read or modify
+	countInfo *countInfo // Standalone context for timing stats only, maintained internally; callers must not read or modify
+}
+
+type countInfo struct {
+	mu sync.Mutex
+	context.Context
+	//事已至此,考虑之后直接使用时间字段来记录吧
+	// StartTime time.Time //类似这样
 }
 
 func (t *contextTask) Process() {
