@@ -118,12 +118,13 @@ loop:
 func (w *worker) runTask(task Task) {
 	atomic.AddInt64(&w.pool.consumeCount, 1)
 
-	// 提取 timing 上下文,触发队列等待耗时记录
+	// Extract timing context to trigger queue wait duration recording
 	if ct, ok := task.(*contextTask); ok {
-		ct.ctx = context.WithValue(ct.ctx, StartedAt, time.Now())
-		defer func() { //最后记录完成时间
-			ct.ctx = context.WithValue(ct.ctx, CompletedAt, time.Now())
-			SendByContext(ct.ctx, w.pool.sampleRate)
+		sendCtx := context.WithValue(ct.ctx, StartedAt, time.Now())
+		// Create a new context to avoid data race with submit() - never modify ct.ctx directly
+		defer func() { // Record completion time at the end
+			sendCtx = context.WithValue(sendCtx, CompletedAt, time.Now())
+			SendByContext(sendCtx, w.pool.sampleRate)
 		}()
 	}
 
