@@ -1,4 +1,4 @@
-package agilepool
+﻿package agilepool
 
 import (
 	"context"
@@ -120,6 +120,14 @@ type Pool struct {
 	submitHist  *histogram // submit count distribution per window
 	consumeHist *histogram // consume count distribution per window
 	exitHist    *histogram // exit count distribution per window
+
+	sampleRate float32 // metrics sampling rate: fraction of contexts sampled (0.0=off, 1.0=every task)
+}
+
+// SetSampleRate sets the metrics sampling rate in [0.0, 1.0].
+// sampleRate >= 1.0 records every task; 0.5 samples ~50% of contexts.
+func (p *Pool) SetSampleRate(sampleRate float32) {
+	p.sampleRate = sampleRate
 }
 
 func NewPool(c *Config) *Pool {
@@ -133,6 +141,7 @@ func NewPool(c *Config) *Pool {
 		logger:      log.Default(),
 		capacity:    c.workerNumCapacity,
 		taskQueue:   make(chan Task, internalTaskQueueCap),
+		sampleRate:  c.sampleRate,
 	}
 
 	switch c.idleContainerType {
@@ -202,6 +211,18 @@ func (p *Pool) SubmitCtx(ctx context.Context, task Task) {
 }
 
 func (p *Pool) submit(ctx context.Context, task Task) {
+	// Stamp submit time and propagate the timing context to contextTask
+	// so workers can read it via task.(*contextTask).countInfo.
+	if ct, ok := task.(*contextTask); ok {
+		//协程写入: initialise countInfo before locking (nil from SubmitCtx).
+		if ct.countInfo == nil {
+			ct.countInfo = &countInfo{}
+		}
+		ct.countInfo.mu.Lock()
+		defer ct.countInfo.mu.Unlock()
+		ctx = context.WithValue(context.Background(), SubmittedAt, time.Now()) // Create a fresh context from context.Background() for timing stats only, avoiding data races on the caller's context
+		ct.countInfo.Context = ctx
+	}
 	if atomic.LoadInt32(&p.closed) == 1 {
 		return
 	}
@@ -217,9 +238,13 @@ func (p *Pool) submit(ctx context.Context, task Task) {
 		}
 	}
 
-	if p.config.workMode == NONBLOCK {
+	if p.config.workMode == NONBLOCK { // non-blocking mode: drop on full queue
 		select {
 		case p.taskQueue <- task:
+			if ct, ok := task.(*contextTask); ok {
+				ctx = context.WithValue(ctx, EnqueuedAt, time.Now()) // Update enqueue time inside the select branch; only one goroutine touches this stats ctx, no extra sync needed
+				ct.countInfo.Context = ctx
+			}
 		default:
 			p.done()
 		}
@@ -229,6 +254,11 @@ func (p *Pool) submit(ctx context.Context, task Task) {
 	// Try fast path: push to channel directly.
 	select {
 	case p.taskQueue <- task:
+		// Fast-path success: stamp enqueue time.
+		ctx = context.WithValue(ctx, EnqueuedAt, time.Now()) // Same as above: stamp enqueue time in the fast-path select branch
+		if ct, ok := task.(*contextTask); ok {
+			ct.countInfo.Context = ctx
+		}
 		return
 	default:
 	}
@@ -246,7 +276,11 @@ func (p *Pool) submit(ctx context.Context, task Task) {
 	// This gives workers time to drain and bounds peak memory.
 	if p.chunkLen >= maxChunkLen {
 		p.taskMu.Unlock()
-		p.taskQueue <- task // block until a worker picks up
+		p.taskQueue <- task                                  // block until a worker picks up
+		ctx = context.WithValue(ctx, EnqueuedAt, time.Now()) // stamp enqueue time after handoff
+		if ct, ok := task.(*contextTask); ok {               // propagate into the task's context
+			ct.ctx = ctx
+		}
 		return
 	}
 
@@ -323,8 +357,16 @@ func (p *Pool) popHead() (Task, bool) {
 }
 
 type contextTask struct {
-	ctx  context.Context
-	task Task
+	ctx       context.Context
+	task      Task
+	countInfo *countInfo // Standalone context for timing stats only, maintained internally; callers must not read or modify
+}
+
+type countInfo struct {
+	mu sync.Mutex
+	context.Context
+	//事已至此,考虑之后直接使用时间字段来记录吧
+	// StartTime time.Time //类似这样
 }
 
 func (t *contextTask) Process() {
@@ -589,4 +631,29 @@ func (p *Pool) GetRunningWorkersNum() int64 {
 // been allocated from sync.Pool.New over the pool's lifetime.
 func (p *Pool) GetWorkerCreateCount() int64 {
 	return atomic.LoadInt64(&p.workerCreateCount)
+}
+
+// GetTaskQueueLen returns the number of tasks currently queued in the
+// handoff channel (taskQueue), i.e. tasks submitted but not yet picked
+// up by a worker. This is a snapshot of len(taskQueue) and does not
+// include tasks waiting in the chunked overflow buffer.
+func (p *Pool) GetTaskQueueLen() int {
+	// Returns the number of tasks that have been submitted but not yet enqueued for execution.
+	return len(p.taskQueue)
+}
+
+// GetIdleWorkerCount returns the number of workers currently parked in
+// the idle container, waiting to be reused. These workers are not
+// actively processing tasks.
+func (p *Pool) GetIdleWorkerCount() int64 {
+	// Returns the current number of idle workers available for task assignment.
+	return p.idleWorks.Len()
+}
+
+// GetCapacity returns the maximum number of workers that the pool can
+// create and maintain concurrently. This value is set during pool
+// initialization and remains constant throughout the pool's lifecycle.
+// Using a getter function provides a more idiomatic and professional API.
+func (p *Pool) GetCapacity() int64 {
+	return p.capacity
 }

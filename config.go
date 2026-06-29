@@ -12,6 +12,7 @@ type Config struct {
 	statsWindowSize    int           // number of windows for median calculation
 	scalerPeriod       time.Duration // scaler tick interval (e.g. 50ms)
 	backlogDecayFactor float64       // queue backlog weight in scaler target (0-1)
+	sampleRate         float32       // metrics 采样率, 0.0~1.0; 1.0=100%记录
 }
 
 type ConfigOption func(*Config)
@@ -102,6 +103,17 @@ func WithBacklogDecayFactor(factor float64) ConfigOption {
 	return func(c *Config) {
 		if factor >= 0 && factor <= 1 {
 			c.backlogDecayFactor = factor
+		}
+	}
+}
+
+// WithSampleRate 设置 metrics 采样率。
+// sampleRate 取值范围 (0.0, 1.0], 1.0 表示 100% 采样, 0.5 表示约 50% 采样。
+// 在 worker 执行完任务后,会按此比例将耗时指标记录到 Prometheus Histogram 中。
+func WithSampleRate(sampleRate float32) ConfigOption {
+	return func(c *Config) {
+		if sampleRate > 0 {
+			c.sampleRate = sampleRate
 		}
 	}
 }
