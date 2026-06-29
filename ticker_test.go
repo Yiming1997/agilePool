@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,9 +244,13 @@ func TestSendByContext_SampleRateZero(t *testing.T) {
 // ---- Taker ----
 
 func TestTaker_CollectsMetrics(t *testing.T) {
+	var mu sync.Mutex
 	var collected int
+
 	collectFn := func(p *agilepool.Pool) {
+		mu.Lock()
 		collected++
+		mu.Unlock()
 	}
 
 	p := agilepool.NewPool(agilepool.NewConfig())
@@ -262,13 +267,20 @@ func TestTaker_CollectsMetrics(t *testing.T) {
 	go agilepool.Taker(opt)
 	time.Sleep(25 * time.Millisecond) // at least 2 collection cycles
 
-	assert.GreaterOrEqual(t, collected, 2, "Taker should collect at least 2 times")
+	mu.Lock()
+	count := collected
+	mu.Unlock()
+	assert.GreaterOrEqual(t, count, 2, "Taker should collect at least 2 times")
 }
 
 func TestTaker_NilPoolCleanup(t *testing.T) {
+	var mu sync.Mutex
 	var collected int
+
 	collectFn := func(p *agilepool.Pool) {
+		mu.Lock()
 		collected++
+		mu.Unlock()
 	}
 
 	p := agilepool.NewPool(agilepool.NewConfig())
@@ -286,7 +298,10 @@ func TestTaker_NilPoolCleanup(t *testing.T) {
 	time.Sleep(25 * time.Millisecond)
 
 	// Only the non-nil pool should be collected.
-	assert.GreaterOrEqual(t, collected, 2)
+	mu.Lock()
+	count := collected
+	mu.Unlock()
+	assert.GreaterOrEqual(t, count, 2)
 }
 
 // ---- SendWithRand sampling ----
