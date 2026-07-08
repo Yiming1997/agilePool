@@ -1,4 +1,4 @@
-package agilepool
+﻿package agilepool
 
 import (
 	"context"
@@ -589,4 +589,29 @@ func (p *Pool) GetRunningWorkersNum() int64 {
 // been allocated from sync.Pool.New over the pool's lifetime.
 func (p *Pool) GetWorkerCreateCount() int64 {
 	return atomic.LoadInt64(&p.workerCreateCount)
+}
+
+// GetTaskQueueLen returns the number of tasks currently queued in the
+// handoff channel (taskQueue), i.e. tasks submitted but not yet picked
+// up by a worker. This is a snapshot of len(taskQueue) and does not
+// include tasks waiting in the chunked overflow buffer.
+func (p *Pool) GetTaskQueueLen() int {
+	// Returns the number of tasks that have been submitted but not yet enqueued for execution.
+	return len(p.taskQueue)
+}
+
+// GetIdleWorkerCount returns the number of workers currently parked in
+// the idle container, waiting to be reused. These workers are not
+// actively processing tasks.
+func (p *Pool) GetIdleWorkerCount() int64 {
+	// Returns the current number of idle workers available for task assignment.
+	return p.idleWorks.Len()
+}
+
+// GetCapacity returns the maximum number of workers that the pool can
+// create and maintain concurrently. This value is set during pool
+// initialization and remains constant throughout the pool's lifecycle.
+// Using a getter function provides a more idiomatic and professional API.
+func (p *Pool) GetCapacity() int64 {
+	return p.capacity
 }
