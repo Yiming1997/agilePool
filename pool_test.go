@@ -390,3 +390,64 @@ func TestAgilePoolBatchWithScaler(t *testing.T) {
 		})
 	}
 }
+
+// ---- SampleRate / SetSampleRate ----
+
+func TestPool_SetSampleRate(t *testing.T) {
+	p := agilepool.NewPool(agilepool.NewConfig())
+	defer p.Close()
+
+	p.SetSampleRate(0.5)
+	// sampleRate is unexported; verify behaviour instead by submitting a
+	// contextTask and confirming no panic.
+	ctx := context.Background()
+	p.SubmitCtx(ctx, agilepool.TaskFunc(func() error { return nil }))
+	p.Wait()
+}
+
+func TestPool_WithSampleRateConfig(t *testing.T) {
+	p := agilepool.NewPool(agilepool.NewConfig(
+		agilepool.WithSampleRate(0.3),
+	))
+	defer p.Close()
+
+	// Pool with sampleRate set via Config must still submit and execute
+	// contextTask normally.
+	var executed int64
+	p.SubmitCtx(context.Background(), agilepool.TaskFunc(func() error {
+		executed = 1
+		return nil
+	}))
+	p.Wait()
+	assert.Equal(t, int64(1), executed)
+}
+
+func TestPool_WithSampleRateDefault(t *testing.T) {
+	// Without WithSampleRate, sampleRate defaults to 0.
+	p := agilepool.NewPool(agilepool.NewConfig())
+	defer p.Close()
+
+	var executed int64
+	p.SubmitCtx(context.Background(), agilepool.TaskFunc(func() error {
+		executed = 1
+		return nil
+	}))
+	p.Wait()
+	assert.Equal(t, int64(1), executed)
+}
+
+func TestPool_SetSampleRateChainable(t *testing.T) {
+	// Set the rate, then submit.
+	p := agilepool.NewPool(agilepool.NewConfig())
+	defer p.Close()
+
+	p.SetSampleRate(1.0) // 100% sampling
+
+	var executed int64
+	p.SubmitCtx(context.Background(), agilepool.TaskFunc(func() error {
+		executed = 1
+		return nil
+	}))
+	p.Wait()
+	assert.Equal(t, int64(1), executed)
+}

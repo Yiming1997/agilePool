@@ -1,6 +1,7 @@
 package agilepool
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 )
@@ -116,6 +117,19 @@ loop:
 
 func (w *worker) runTask(task Task) {
 	atomic.AddInt64(&w.pool.consumeCount, 1)
+
+	// Extract timing context to trigger queue wait duration recording
+	if ct, ok := task.(*contextTask); ok {
+		ct.countInfo.mu.Lock()
+		defer ct.countInfo.mu.Unlock() //虽然这样显得多次一举(毕竟任务不可能在提交之前就运行),但是还是为了避免严格的数据竞争审查.
+		sendCtx := context.WithValue(ct.countInfo.Context, StartedAt, time.Now())
+		// Create a new context to avoid data race with submit() - never modify ct.countInfo directly
+		defer func() { // Record completion time at the end
+			sendCtx = context.WithValue(sendCtx, CompletedAt, time.Now())
+			SendByContext(sendCtx, w.pool.sampleRate)
+		}()
+	}
+
 	defer func() {
 		if p := recover(); p != nil {
 			w.pool.logger.Printf("worker exits from panic: %v\n%s\n", p, Stack(1))
