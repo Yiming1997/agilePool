@@ -334,7 +334,7 @@ func (t *contextTask) Process() {
 	t.task.Process()
 }
 
-// Submits a task before the specified timeout. If timeout is reached during execution, the task is canceled.
+// Submits a task with a start timeout. If timeout is reached before execution, the task is skipped.
 func (p *Pool) SubmitBefore(task Task, timeout time.Duration) {
 	if isNilTask(task) {
 		return
