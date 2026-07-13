@@ -1,6 +1,17 @@
-package agilepool
+﻿package agilepool
 
 import "time"
+
+// LockType defines the lock implementation for muIdle (idle worker container lock).
+//
+//   MutexLock  = sync.Mutex, suitable for longer or unpredictable hold times
+//   SpinLock   = spin lock, suitable for very short hold times under high contention (recommended with RingQueue)
+type LockType int8
+
+const (
+	MutexLock LockType = iota // sync.Mutex (default, compatible with existing behavior)
+	SpinLock                  // spin lock (CAS + exponential backoff, no kernel involvement)
+)
 
 type Config struct {
 	cleanPeriod        time.Duration
@@ -8,6 +19,7 @@ type Config struct {
 	workerNumCapacity  int64
 	workMode           WorkMode
 	idleContainerType  IdleContainerType
+	lockType           LockType      // muIdle lock type: MutexLock or SpinLock
 	statsSamplePeriod  time.Duration // sampling interval for rate stats (e.g. 100ms)
 	statsWindowSize    int           // number of windows for median calculation
 	scalerPeriod       time.Duration // scaler tick interval (e.g. 50ms)
@@ -23,6 +35,7 @@ func NewConfig(opts ...ConfigOption) *Config {
 		workerNumCapacity:  defaultMaxWorkerNumCapacity,
 		workMode:           defaultWorkMode,
 		idleContainerType:  defaultIdleContainerType,
+		lockType:           MutexLock, // default to sync.Mutex, compatible with existing behavior
 		statsSamplePeriod:  defaultStatsSamplePeriod,
 		statsWindowSize:    defaultStatsWindowSize,
 		scalerPeriod:       defaultScalerPeriod,
@@ -97,6 +110,16 @@ func WithScalerPeriod(d time.Duration) ConfigOption {
 	}
 }
 
+// WithLockType sets the lock type for muIdle.
+//   MutexLock — sync.Mutex (default), better performance for long hold times (avoids CPU spinning)
+//   SpinLock  — spin lock, higher throughput for very short hold times under high contention (eliminates kernel switching overhead)
+// If not called, defaults to MutexLock.
+func WithLockType(lockType LockType) ConfigOption {
+	return func(c *Config) {
+		c.lockType = lockType
+	}
+}
+
 func WithBacklogDecayFactor(factor float64) ConfigOption {
 	return func(c *Config) {
 		if factor >= 0 && factor <= 1 {
@@ -104,3 +127,4 @@ func WithBacklogDecayFactor(factor float64) ConfigOption {
 		}
 	}
 }
+
