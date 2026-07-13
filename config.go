@@ -1,6 +1,17 @@
-package agilepool
+﻿package agilepool
 
 import "time"
+
+// LockType 定义 muIdle（空闲 worker 容器锁）的锁实现类型。
+//
+//   MutexLock  = sync.Mutex，适用于持锁时间较长或不确定的场景
+//   SpinLock   = 自旋锁，适用于持锁极短但争用频繁的场景（推荐搭配 RingQueue）
+type LockType int8
+
+const (
+	MutexLock LockType = iota // sync.Mutex（默认，兼容现有行为）
+	SpinLock                  // 自旋锁（CAS + 指数退避，不经过内核）
+)
 
 type Config struct {
 	cleanPeriod        time.Duration
@@ -8,6 +19,7 @@ type Config struct {
 	workerNumCapacity  int64
 	workMode           WorkMode
 	idleContainerType  IdleContainerType
+	lockType           LockType      // muIdle 锁类型：MutexLock 或 SpinLock
 	statsSamplePeriod  time.Duration // sampling interval for rate stats (e.g. 100ms)
 	statsWindowSize    int           // number of windows for median calculation
 	scalerPeriod       time.Duration // scaler tick interval (e.g. 50ms)
@@ -23,6 +35,7 @@ func NewConfig(opts ...ConfigOption) *Config {
 		workerNumCapacity:  defaultMaxWorkerNumCapacity,
 		workMode:           defaultWorkMode,
 		idleContainerType:  defaultIdleContainerType,
+		lockType:           MutexLock, // 默认用 sync.Mutex，兼容现有行为
 		statsSamplePeriod:  defaultStatsSamplePeriod,
 		statsWindowSize:    defaultStatsWindowSize,
 		scalerPeriod:       defaultScalerPeriod,
@@ -98,6 +111,16 @@ func WithScalerPeriod(d time.Duration) ConfigOption {
 	}
 }
 
+// WithLockType 设置 muIdle 的锁类型。
+//   MutexLock — sync.Mutex（默认），持锁时间长时性能更好（避免 CPU 空转）
+//   SpinLock  — 自旋锁，持锁极短 + 高竞争时吞吐更高（消除内核切换开销）
+// 如果不调用此函数，默认使用 MutexLock。
+func WithLockType(lockType LockType) ConfigOption {
+	return func(c *Config) {
+		c.lockType = lockType
+	}
+}
+
 func WithBacklogDecayFactor(factor float64) ConfigOption {
 	return func(c *Config) {
 		if factor >= 0 && factor <= 1 {
@@ -105,3 +128,4 @@ func WithBacklogDecayFactor(factor float64) ConfigOption {
 		}
 	}
 }
+

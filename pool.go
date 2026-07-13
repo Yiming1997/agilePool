@@ -83,8 +83,8 @@ type Pool struct {
 	capacity          int64 // The maximum number of workers in the pool.
 	runningWorkersNum int64
 	closed            int32 // 1 once Close has been called, otherwise 0
-	muIdle            sync.Mutex
-	workerPool        sync.Pool // Worker object pool
+	muIdle            sync.Locker // 空闲容器锁，MutexLock 时为 sync.Mutex，SpinLock 时为自旋锁
+	workerPool        sync.Pool   // Worker object pool
 	idleWorks         IdleWorkerContainer
 	config            *Config
 	lock              *sync.Mutex
@@ -130,9 +130,15 @@ func NewPool(c *Config) *Pool {
 		closePoolCn: make(chan struct{}),
 		config:      c,
 		lock:        &sync.Mutex{},
+		muIdle:      &sync.Mutex{}, // 默认值，下面根据配置覆盖
 		logger:      log.Default(),
 		capacity:    c.workerNumCapacity,
 		taskQueue:   make(chan Task, internalTaskQueueCap),
+	}
+
+	// 根据配置选择 muIdle 的锁实现：SpinLock（自旋）或 MutexLock（sync.Mutex）
+	if c.lockType == SpinLock {
+		p.muIdle = newSpinLock()
 	}
 
 	switch c.idleContainerType {
