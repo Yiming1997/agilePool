@@ -92,7 +92,7 @@ defer pool.Close()
 | `WithScalerPeriod` | `10ms` | 扩缩容器的检查周期。 |
 | `WithBacklogDecayFactor` | `0.3` | 积压在扩缩公式中的权重（0–1）。值越大，扩容越激进。 |
 
-> **注意**：`WithTaskQueueSize` 保留以兼容旧 API，但已无实际效果——内部交接 channel 容量固定为 10,000，主缓冲区动态增长。
+> **注意**：`WithTaskQueueSize` 控制内部交接 channel 的容量。超过该容量的任务会进入动态增长的分块缓冲区。
 
 ## 提交任务
 
