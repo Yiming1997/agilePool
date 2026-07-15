@@ -4,7 +4,7 @@ import "time"
 
 type Config struct {
 	cleanPeriod        time.Duration
-	taskQueueSize      int64 // retained for API compat; internal channel cap is fixed at 64
+	taskQueueSize      int64 // capacity of the internal handoff channel
 	workerNumCapacity  int64
 	workMode           WorkMode
 	idleContainerType  IdleContainerType
@@ -42,10 +42,9 @@ func WithCleanPeriod(duration time.Duration) ConfigOption {
 	}
 }
 
-// WithTaskQueueSize is retained for backward compatibility.
-// The internal handoff channel capacity is now fixed (64 slots) and the
-// primary queue (taskBuf) grows dynamically on demand, so the queue-size
-// setting has no effect on pre-allocated memory or scaler behaviour.
+// WithTaskQueueSize sets the capacity of the internal handoff channel.
+// Tasks beyond this channel capacity are stored in the dynamic chunked buffer
+// according to the configured work mode and backpressure rules.
 func WithTaskQueueSize(size int64) ConfigOption {
 	return func(c *Config) {
 		if size > 0 {

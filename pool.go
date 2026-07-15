@@ -1,4 +1,4 @@
-﻿package agilepool
+package agilepool
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 
 const (
 	defaultCleanPeriod          = 500 * time.Millisecond
-	defaultTaskQueueSize        = 200000
+	defaultTaskQueueSize        = 10000
 	defaultMaxWorkerNumCapacity = math.MaxInt64
 	defaultWorkMode             = BLOCK
 	defaultIdleContainerType    = LinkedListType
@@ -20,12 +20,6 @@ const (
 	defaultStatsWindowSize      = 10
 	defaultScalerPeriod         = 10 * time.Millisecond
 	defaultBacklogDecayFactor   = 0.3
-
-	// internalTaskQueueCap is the fixed capacity of the internal handoff
-	// channel. It is small and NOT user-configurable — workers pull from
-	// taskBuf for the bulk of queued tasks, so channel capacity does not
-	// couple memory usage or scaler behaviour to the queue-size setting.
-	internalTaskQueueCap = 10000
 
 	// taskChunkSize is the number of Task slots per chunk in the linked-list
 	// buffer. Small, fixed-size chunks avoid the ~2× memory overhead of a
@@ -132,7 +126,7 @@ func NewPool(c *Config) *Pool {
 		lock:        &sync.Mutex{},
 		logger:      log.Default(),
 		capacity:    c.workerNumCapacity,
-		taskQueue:   make(chan Task, internalTaskQueueCap),
+		taskQueue:   make(chan Task, c.taskQueueSize),
 	}
 
 	switch c.idleContainerType {

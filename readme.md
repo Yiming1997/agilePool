@@ -92,7 +92,7 @@ defer pool.Close()
 | `WithScalerPeriod` | `10ms` | How often the scaler evaluates whether to spawn workers. |
 | `WithBacklogDecayFactor` | `0.3` | Weight (0–1) for backlog in the scaler target formula. Higher values make the scaler more aggressive at draining queues. |
 
-> **Note**: `WithTaskQueueSize` is retained for API compatibility but has no effect — the internal handoff channel capacity is fixed at 10,000 slots and the primary buffer grows dynamically.
+> **Note**: `WithTaskQueueSize` controls the capacity of the internal handoff channel. Tasks beyond that capacity are stored in the dynamically growing chunked buffer.
 
 ## Submitting Tasks
 
