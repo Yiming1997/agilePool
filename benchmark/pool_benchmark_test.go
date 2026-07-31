@@ -1,4 +1,4 @@
-package agilepool_test
+package benchmark_test
 
 import (
 	"sync"

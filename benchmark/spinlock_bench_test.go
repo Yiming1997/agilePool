@@ -3,7 +3,7 @@
 // N goroutines contend for the same lock simultaneously, each performing K cycles of Lock -> atomic increment -> Unlock.
 // Measure total execution time → Calculate the number of Lock/Unlock pairs completed per second.
 // Compare throughput differences between the two locks under varying concurrency levels.
-package agilepool_test
+package benchmark_test
 
 import (
 	"sync"

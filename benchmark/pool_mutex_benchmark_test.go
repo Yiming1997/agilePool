@@ -1,10 +1,11 @@
 // Test goal: measure sync.Mutex performance gap between "long hold" vs "short hold" scenarios
 //
 // Background:
-//   Pool has a muIdle sync.Mutex protecting idle worker container operations (add/remove/query).
-//   Each worker calls addToIdle(w) after finishing its task to put itself back into the idle container (lock→Add→unlock).
-//   Each time the scaler needs to wake an idle worker, it calls Pop() (lock→Pop→unlock).
-//   Under high concurrency, thousands of goroutines contend for this lock, making lock contention the throughput bottleneck.
+//
+//	Pool has a muIdle sync.Mutex protecting idle worker container operations (add/remove/query).
+//	Each worker calls addToIdle(w) after finishing its task to put itself back into the idle container (lock→Add→unlock).
+//	Each time the scaler needs to wake an idle worker, it calls Pop() (lock→Pop→unlock).
+//	Under high concurrency, thousands of goroutines contend for this lock, making lock contention the throughput bottleneck.
 //
 // How "long hold" vs "short hold" comparison is created:
 //   - Slice container Pop() is O(n): the underlying s.workers = s.workers[1:] shifts the entire array.
@@ -13,13 +14,13 @@
 //   - RingQueue container Pop() is O(1): only modifies the head index, hold time is extremely short.
 //
 // Test flow (run function):
-//   1. Create a Pool with specified container type (Slice or RingQueue), capacity 50k
-//   2. Start 5000 concurrent submitters, firing tasks aggressively (500k total)
-//   3. Each task takes 20ms (time.Sleep), simulating real business logic
-//   4. The pool auto-scales: pops idle workers / creates new ones when needed, returns to idle when over capacity
-//   5. This "complete→return to idle→be popped→execute" cycle hammers muIdle, creating lock contention
-//   6. Compare total elapsed time between the two container types; the difference is the extra cost of long hold times
-package agilepool_test
+//  1. Create a Pool with specified container type (Slice or RingQueue), capacity 50k
+//  2. Start 5000 concurrent submitters, firing tasks aggressively (500k total)
+//  3. Each task takes 20ms (time.Sleep), simulating real business logic
+//  4. The pool auto-scales: pops idle workers / creates new ones when needed, returns to idle when over capacity
+//  5. This "complete→return to idle→be popped→execute" cycle hammers muIdle, creating lock contention
+//  6. Compare total elapsed time between the two container types; the difference is the extra cost of long hold times
+package benchmark_test
 
 import (
 	"sync/atomic"
@@ -50,9 +51,10 @@ const (
 // run runs one round of stress test, returning the total elapsed time from Submit until all tasks complete.
 //
 // Parameters:
-//   ct   — Idle container type (Slice = O(n) Pop long hold, RingQueue = O(1) Pop short hold)
-//   lt   — muIdle lock type (MutexLock = sync.Mutex, SpinLock = spin lock)
-//   label — Scene name for output table
+//
+//	ct   — Idle container type (Slice = O(n) Pop long hold, RingQueue = O(1) Pop short hold)
+//	lt   — muIdle lock type (MutexLock = sync.Mutex, SpinLock = spin lock)
+//	label — Scene name for output table
 func run(tb testing.TB, ct agilepool.IdleContainerType, lt agilepool.LockType, label string) time.Duration {
 	pool := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithWorkerNumCapacity(workerCap),
@@ -121,18 +123,19 @@ func run(tb testing.TB, ct agilepool.IdleContainerType, lt agilepool.LockType, l
 	// ---------- Output one result row ----------
 	tps := float64(totalTasks) / elapsed.Seconds()
 	tb.Logf("%-32s | %8v | %10.0f t/s | peak=%-5d idle=%-5d created=%-7d",
-		label,                             // scene name
-		elapsed.Round(time.Millisecond),   // total elapsed time
-		tps,                               // throughput (tasks per second)
-		peakRunning.Load(),                // peak concurrent worker count
-		pool.GetIdleWorkerCount(),         // idle worker count at end
-		pool.GetWorkerCreateCount(),       // total workers created
+		label,                           // scene name
+		elapsed.Round(time.Millisecond), // total elapsed time
+		tps,                             // throughput (tasks per second)
+		peakRunning.Load(),              // peak concurrent worker count
+		pool.GetIdleWorkerCount(),       // idle worker count at end
+		pool.GetWorkerCreateCount(),     // total workers created
 	)
 	return elapsed
 }
 
 // TestMuIdleContentionReport compares 4 combinations:
-//   Container type (Slice = long hold / RingQueue = short hold) × Lock type (Mutex / SpinLock)
+//
+//	Container type (Slice = long hold / RingQueue = short hold) × Lock type (Mutex / SpinLock)
 func TestMuIdleContentionReport(t *testing.T) {
 	t.Log("")
 	t.Log("==============================================================================")
