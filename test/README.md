@@ -65,6 +65,7 @@ Or run `run_test.bat` / `run_test.sh` for a full test suite.
 | `--cpuprofile` | | `false` | enable CPU profiling |
 | `--memprofile` | | `false` | enable memory profiling |
 | `--wait-exit` | `-e` | `0` | extra seconds to wait before exit |
+| `--nohook` | | `false` | disable hook-based execution counters |
 
 ### Collected Metrics
 
@@ -88,6 +89,10 @@ When `--take-time` (`-i`) > 0, a background goroutine samples these fields at th
 | `workers_created` | `pool.GetWorkerCreateCount()` | total workers created |
 | `task_queue_len` | `pool.GetTaskQueueLen()` | pending tasks in queue |
 | `cpu_pct` | `gopsutil cpu.Percent` | process CPU usage (%) |
+| `hook_submitted` | hook `OnTaskSubmitted` | tasks accepted by pool |
+| `hook_enqueued` | hook `OnTaskEnqueued` | tasks entered handoff channel |
+| `hook_started` | hook `OnTaskStarted` | tasks started execution |
+| `hook_completed` | hook `OnTaskCompleted` | tasks finished (incl. panics) |
 
 ### Plotting
 
@@ -95,7 +100,7 @@ When `--take-time` (`-i`) > 0, a background goroutine samples these fields at th
 python plot_csv.py
 ```
 
-Scans all `metrics_*.csv` and generates PNG charts (memory / workers / GC / CPU subplots).
+Scans all `metrics_*.csv` and generates SVG charts (memory / workers / GC / CPU subplots).
 
 ### Three-Stage Shutdown
 

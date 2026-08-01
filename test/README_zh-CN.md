@@ -65,6 +65,7 @@ agilepool_test.exe -T fixed --task-base 500 -U immediate -t 200000 -w 10000 -i 1
 | `--cpuprofile` | | `false` | CPU profiling |
 | `--memprofile` | | `false` | Memory profiling |
 | `--wait-exit` | `-e` | `0` | 退出前额外等待秒数 |
+| `--nohook` | | `false` | 禁用 Hook 执行计数器 |
 
 ### 指标采集
 
@@ -88,6 +89,10 @@ agilepool_test.exe -T fixed --task-base 500 -U immediate -t 200000 -w 10000 -i 1
 | `workers_created` | `pool.GetWorkerCreateCount()` | 累计创建 worker |
 | `task_queue_len` | `pool.GetTaskQueueLen()` | 队列长度 |
 | `cpu_pct` | `gopsutil cpu.Percent` | CPU 使用率（%） |
+| `hook_submitted` | Hook `OnTaskSubmitted` | 池接受的任务数 |
+| `hook_enqueued` | Hook `OnTaskEnqueued` | 进入传递通道的任务数 |
+| `hook_started` | Hook `OnTaskStarted` | 开始执行的任务数 |
+| `hook_completed` | Hook `OnTaskCompleted` | 执行完毕的任务数（含 panic） |
 
 ### 绘图
 
@@ -95,7 +100,7 @@ agilepool_test.exe -T fixed --task-base 500 -U immediate -t 200000 -w 10000 -i 1
 python plot_csv.py
 ```
 
-扫描 `metrics_*.csv` 生成 PNG 折线图。
+扫描 `metrics_*.csv` 生成 SVG 矢量图。
 
 ### 三段式退出
 

@@ -106,11 +106,16 @@ loop:
 
 func (w *worker) runTask(task Task) {
 	atomic.AddInt64(&w.pool.consumeCount, 1)
+
+	w.pool.dispatchTaskStarted(task)
+
 	defer func() {
-		if p := recover(); p != nil {
+		p := recover()
+		if p != nil {
 			w.pool.logger.Printf("worker exits from panic: %v\n%s\n", p, Stack(1))
 		}
+		w.pool.done()
+		w.pool.dispatchTaskCompleted(task, p)
 	}()
-	defer w.pool.done()
 	task.Process()
 }

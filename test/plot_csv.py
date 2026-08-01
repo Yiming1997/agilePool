@@ -49,7 +49,11 @@ for f in csv_files:
         ('cpu_pct', 'CPU (%)'),
         ('gc_total', 'GC Total Count'),
         ('goroutines', 'Goroutines'),
-        ('task_queue_len', 'Task Queue Length')
+        ('task_queue_len', 'Task Queue Length'),
+        ('hook_submitted', 'Hook: Submitted'),
+        ('hook_enqueued', 'Hook: Enqueued'),
+        ('hook_started', 'Hook: Started'),
+        ('hook_completed', 'Hook: Completed'),
     ]
     
     # Filter existing metrics
@@ -65,7 +69,7 @@ for f in csv_files:
     nrows = (n + ncols - 1) // ncols
     
     fig, axes = plt.subplots(nrows, ncols, figsize=(5*ncols, 4*nrows))
-    fig.suptitle(name, fontsize=16, fontweight='bold')
+    fig.suptitle(name, fontsize=16, fontweight='bold', y=0.98)
     
     if n == 1:
         axes = [axes]
@@ -81,10 +85,14 @@ for f in csv_files:
         ax.set_ylabel(title)
         ax.grid(True, alpha=0.3)
         
-        # Annotate last value
+        # Annotate last value (integer columns like counters get no decimals)
         last_val = df[col].iloc[-1]
         last_time = df['run_sec'].iloc[-1]
-        ax.annotate(f'{last_val:.2f}', 
+        int_cols = {'hook_submitted','hook_enqueued','hook_started','hook_completed',
+                    'gc_total','workers_running','workers_idle','workers_created',
+                    'task_queue_len','goroutines'}
+        fmt = '{:.0f}' if col in int_cols else '{:.2f}'
+        ax.annotate(fmt.format(last_val), 
                    xy=(last_time, last_val),
                    xytext=(5, 5), 
                    textcoords='offset points',
@@ -95,7 +103,7 @@ for f in csv_files:
     for idx in range(len(existing_metrics), len(axes)):
         axes[idx].axis('off')
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.95])  # leave top 5% for suptitle
     
     # Save as SVG (vector format for infinite zoom)
     svg_file = f"{name}.svg"

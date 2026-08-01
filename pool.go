@@ -97,6 +97,8 @@ type Pool struct {
 	submitHist  *histogram // submit count distribution per window
 	consumeHist *histogram // consume count distribution per window
 	exitHist    *histogram // exit count distribution per window
+
+	hooks *hooks // lifecycle callbacks registered via OnTaskSubmitted etc.
 }
 
 func NewPool(c *Config) *Pool {
@@ -112,6 +114,7 @@ func NewPool(c *Config) *Pool {
 		capacity:    c.workerNumCapacity,
 		taskQueue:   make(chan Task, c.taskQueueSize),
 		taskBuf:     newChunkedTaskBuffer(),
+		hooks:       newHooks(),
 	}
 
 	// Select muIdle lock implementation based on config: SpinLock or MutexLock (sync.Mutex)
@@ -210,10 +213,12 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 			go w.run(nil)
 		}
 	}
+	p.dispatchTaskSubmitted(task)
 
 	if p.config.workMode == NONBLOCK {
 		select {
 		case p.taskQueue <- task:
+			p.dispatchTaskEnqueued(task)
 			return true
 		default:
 			p.done()
@@ -221,9 +226,9 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 		}
 	}
 
-	// Try fast path: push to channel directly.
 	select {
 	case p.taskQueue <- task:
+		p.dispatchTaskEnqueued(task)
 		return true
 	default:
 	}
@@ -231,6 +236,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 	result := p.taskBuf.PushAndForward(task, func(t Task) bool {
 		select {
 		case p.taskQueue <- t:
+			p.dispatchTaskEnqueued(t)
 			return true
 		default:
 			return false
@@ -242,7 +248,8 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 		p.done()
 		return false
 	case taskBufferFull:
-		p.taskQueue <- task // block until a worker picks up
+		p.taskQueue <- task
+		p.dispatchTaskEnqueued(task)
 		return true
 	default:
 		return true
@@ -492,6 +499,8 @@ func (p *Pool) Close() {
 	p.taskBuf.Close()
 
 	close(p.closePoolCn)
+
+	p.dispatchPoolClosed() // fire OnPoolClosed hooks
 }
 
 func (p *Pool) Wait() {

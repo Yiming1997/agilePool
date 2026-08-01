@@ -47,8 +47,8 @@ const (
 
 // Phase defines one stage of a multi-phase burst.
 type Phase struct {
-	StartSec    int // relative start time (seconds)
-	DurationSec int // duration (seconds)
+	StartSec    int     // relative start time (seconds)
+	DurationSec int     // duration (seconds)
 	RatePerSec  float64 // submissions per second
 }
 
@@ -88,6 +88,9 @@ type FlagArgs struct {
 
 	// Post-run wait
 	WaitExitTime int
+
+	// Hook control
+	NoHook bool
 }
 
 var taskTypeNames = map[string]TaskType{
@@ -147,7 +150,7 @@ func parseFlags() FlagArgs {
 		cleanPeriod                              time.Duration
 		queueSize                                int64
 		container, mode                          string
-		cpuProf, memProf                         bool
+		cpuProf, memProf, noHook                 bool
 		takeTime                                 float64
 		waitExit                                 int
 		logFile, logFormat                       string
@@ -197,6 +200,7 @@ func parseFlags() FlagArgs {
 	flag.StringVar(&logFormat, "f", "csv", "output format (short)")
 	flag.IntVar(&waitExit, "wait-exit", 0, "extra seconds to wait before exit")
 	flag.IntVar(&waitExit, "e", 0, "extra wait (short)")
+	flag.BoolVar(&noHook, "nohook", false, "disable hook-based execution counters (reduces lock contention at scale)")
 
 	flag.Parse()
 
@@ -263,6 +267,7 @@ func parseFlags() FlagArgs {
 		CPUProfile: cpuProf, MemProfile: memProf,
 		TakeTime: takeTime, LogFileName: logFile, LogFormat: logFormat,
 		WaitExitTime: waitExit,
+		NoHook:       noHook,
 	}
 }
 
@@ -294,6 +299,11 @@ func printConfig(args FlagArgs) {
 	}
 	if args.TakeTime > 0 {
 		fmt.Printf("  Sampling:      %.3fs → %s (%s)\n", args.TakeTime, args.LogFileName, args.LogFormat)
+	}
+	if args.NoHook {
+		fmt.Println("  Hook tracking: OFF")
+	} else {
+		fmt.Println("  Hook tracking: ON")
 	}
 	fmt.Println()
 }

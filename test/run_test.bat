@@ -1,7 +1,7 @@
 @REM Build and run all benchmark tests
 go build -o agilepool_test.exe .
-agilepool_test.exe -T fixed --task-base 500 -U immediate -t 500000 -w 20000 -i 1 -f csv
-agilepool_test.exe -T uniform --task-base 500 --task-extra 50 -U immediate -t 500000 -w 20000 -i 1 -f csv
+agilepool_test.exe -T fixed --nohook --task-base 500 -U immediate -t 500000 -w 20000 -i 1 -f csv
+agilepool_test.exe -T uniform --nohook --task-base 500 --task-extra 50 -U immediate -t 500000 -w 20000 -i 1 -f csv
 agilepool_test.exe -T normal --task-mean 500 --task-sigma 50 -U immediate -t 500000 -w 20000 -i 1 -f csv
 agilepool_test.exe -T fixed --task-base 500 -U linear --submit-interval 5 --submit-jitter 3 -t 20000 -w 20000 -i 1 -f csv
 agilepool_test.exe -T fixed --task-base 500 -U poisson --submit-mean-interval 10 -t 10000 -w 20000 -i 1 -f csv

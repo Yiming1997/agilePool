@@ -69,6 +69,12 @@ func main() {
 	pool := newPool(args)
 	defer pool.Close()
 
+	// Hook-based execution counters (silent — written to CSV via Couter).
+	// Pass --nohook to disable (reduces lock contention with many workers).
+	if !args.NoHook {
+		setupHookTracking(pool)
+	}
+
 	// Start metrics collector
 	if args.TakeTime > 0 && logFileOut != nil {
 		go Couter(args, pool, logFileOut, start)
