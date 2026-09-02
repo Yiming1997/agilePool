@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"time"
 
-	agilepool "github.com/Yiming1997/agilePool"
+	agilepool "github.com/Yiming1997/agilePool/v2"
 	"github.com/shirou/gopsutil/v3/cpu"
 )
 
@@ -21,7 +21,9 @@ func Couter(args FlagArgs, p *agilepool.Pool, f *os.File, start time.Time) {
 	for range tick.C {
 		runtime.ReadMemStats(&memStats)
 
-		cpuPercent, _ := cpu.Percent(time.Second, false)
+		// Keep the collector responsive so the final sample can be written
+		// during the main program's observation window.
+		cpuPercent, _ := cpu.Percent(100*time.Millisecond, false)
 		var cpuUsage float64
 		if len(cpuPercent) > 0 {
 			cpuUsage = cpuPercent[0]
@@ -52,11 +54,11 @@ func Couter(args FlagArgs, p *agilepool.Pool, f *os.File, start time.Time) {
 					"gc_total,gc_pause_total_ms,gc_pause_avg_ms,gc_cpu_pct,"+
 					"last_gc_sec,next_gc_mb,"+
 					"workers_running,workers_idle,workers_created,task_queue_len,"+
-					"cpu_pct\n")
+					"cpu_pct,hook_mode,hook_submitted,hook_enqueued,hook_started,hook_completed\n")
 				headerWritten = true
 			}
 
-			fmt.Fprintf(f, "%.3f,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.4f,%.3f,%.2f,%d,%d,%d,%d,%.2f\n",
+			fmt.Fprintf(f, "%.3f,%d,%.2f,%.2f,%.2f,%d,%.2f,%.2f,%.4f,%.3f,%.2f,%d,%d,%d,%d,%.2f,%s,%d,%d,%d,%d\n",
 				runSec,
 				runtime.NumGoroutine(),
 				float64(memStats.Alloc)/1024/1024,
@@ -68,8 +70,8 @@ func Couter(args FlagArgs, p *agilepool.Pool, f *os.File, start time.Time) {
 				memStats.GCCPUFraction*100,
 				lastGCRel,
 				float64(memStats.NextGC)/1024/1024,
-				running, idle, created, queueLen,
-				cpuUsage)
+				running, idle, created, queueLen, cpuUsage,
+				args.HookMode, hookSubmitted.Load(), hookEnqueued.Load(), hookStarted.Load(), hookCompleted.Load())
 		case "json":
 			fmt.Fprintf(f, `{"run_sec":%.3f,"goroutines":%d,"heap_alloc_mb":%.2f,`+
 				`"total_alloc_mb":%.2f,"sys_mb":%.2f,"gc_total":%d,`+
@@ -77,7 +79,7 @@ func Couter(args FlagArgs, p *agilepool.Pool, f *os.File, start time.Time) {
 				`"gc_cpu_pct":%.4f,"last_gc_sec":%.3f,"next_gc_mb":%.2f,`+
 				`"workers_running":%d,"workers_idle":%d,`+
 				`"workers_created":%d,"task_queue_len":%d,`+
-				`"cpu_pct":%.2f}`+"\n",
+				`"cpu_pct":%.2f,"hook_mode":"%s","hook_submitted":%d,"hook_enqueued":%d,"hook_started":%d,"hook_completed":%d}`+"\n",
 				runSec,
 				runtime.NumGoroutine(),
 				float64(memStats.Alloc)/1024/1024,
@@ -90,7 +92,7 @@ func Couter(args FlagArgs, p *agilepool.Pool, f *os.File, start time.Time) {
 				lastGCRel,
 				float64(memStats.NextGC)/1024/1024,
 				running, idle, created, queueLen,
-				cpuUsage)
+				cpuUsage, args.HookMode, hookSubmitted.Load(), hookEnqueued.Load(), hookStarted.Load(), hookCompleted.Load())
 		}
 	}
 }

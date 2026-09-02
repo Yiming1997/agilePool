@@ -8,7 +8,7 @@ import (
 	"runtime/pprof"
 	"time"
 
-	agilepool "github.com/Yiming1997/agilePool"
+	agilepool "github.com/Yiming1997/agilePool/v2"
 )
 
 func main() {
@@ -68,6 +68,7 @@ func main() {
 
 	pool := newPool(args)
 	defer pool.Close()
+	setupHooks(pool, args.HookMode)
 
 	// Start metrics collector
 	if args.TakeTime > 0 && logFileOut != nil {
@@ -76,7 +77,7 @@ func main() {
 
 	// Submit tasks according to task-type + submit-type
 	durFn := buildDurationFn(args.TaskCfg)
-	runSubmitter(pool, args.SubmitCfg, args.NumTasks, durFn)
+	runSubmitter(pool, args.SubmitCfg, args.NumTasks, durFn, args.HookMode)
 
 	// Three-stage shutdown
 	// Wait for all workers to finish

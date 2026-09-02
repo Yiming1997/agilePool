@@ -3,7 +3,7 @@ module agilepool-test
 go 1.23.4
 
 require (
-	github.com/Yiming1997/agilePool v0.0.0
+	github.com/Yiming1997/agilePool/v2 v2.0.0
 	github.com/shirou/gopsutil/v3 v3.24.5
 )
 
@@ -18,4 +18,4 @@ require (
 	golang.org/x/sys v0.20.0 // indirect
 )
 
-replace github.com/Yiming1997/agilePool => ../
+replace github.com/Yiming1997/agilePool/v2 => ../

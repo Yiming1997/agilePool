@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	agilepool "github.com/Yiming1997/agilePool"
+	agilepool "github.com/Yiming1997/agilePool/v2"
 )
 
 // TaskType controls how simulated task durations are generated.
@@ -47,8 +47,8 @@ const (
 
 // Phase defines one stage of a multi-phase burst.
 type Phase struct {
-	StartSec    int // relative start time (seconds)
-	DurationSec int // duration (seconds)
+	StartSec    int     // relative start time (seconds)
+	DurationSec int     // duration (seconds)
 	RatePerSec  float64 // submissions per second
 }
 
@@ -88,6 +88,9 @@ type FlagArgs struct {
 
 	// Post-run wait
 	WaitExitTime int
+
+	// Hook overhead test mode: none, hook, or trace.
+	HookMode string
 }
 
 var taskTypeNames = map[string]TaskType{
@@ -150,6 +153,7 @@ func parseFlags() FlagArgs {
 		cpuProf, memProf                         bool
 		takeTime                                 float64
 		waitExit                                 int
+		hookMode                                 string
 		logFile, logFormat                       string
 		taskTypeStr                              string
 		taskBase, taskExtra, taskMean, taskSigma int
@@ -197,6 +201,7 @@ func parseFlags() FlagArgs {
 	flag.StringVar(&logFormat, "f", "csv", "output format (short)")
 	flag.IntVar(&waitExit, "wait-exit", 0, "extra seconds to wait before exit")
 	flag.IntVar(&waitExit, "e", 0, "extra wait (short)")
+	flag.StringVar(&hookMode, "hook-mode", "none", "hook overhead mode: none, hook, trace")
 
 	flag.Parse()
 
@@ -263,6 +268,16 @@ func parseFlags() FlagArgs {
 		CPUProfile: cpuProf, MemProfile: memProf,
 		TakeTime: takeTime, LogFileName: logFile, LogFormat: logFormat,
 		WaitExitTime: waitExit,
+		HookMode:     normalizeHookMode(hookMode),
+	}
+}
+
+func normalizeHookMode(mode string) string {
+	switch strings.ToLower(mode) {
+	case "hook", "trace":
+		return strings.ToLower(mode)
+	default:
+		return "none"
 	}
 }
 
@@ -274,6 +289,7 @@ func printConfig(args FlagArgs) {
 	fmt.Printf("  Tasks:         %d\n", args.NumTasks)
 	fmt.Printf("  Container:     %s\n", containerTypeName(args.IdleContainerType))
 	fmt.Printf("  Mode:          %s\n", workModeName(args.WorkMode))
+	fmt.Printf("  Hook mode:     %s\n", args.HookMode)
 	fmt.Printf("  Task type:     %s", taskTypeName(args.TaskCfg.Type))
 	switch args.TaskCfg.Type {
 	case TaskFixed:
@@ -391,29 +407,29 @@ func newTaskWithWG(durFn func() time.Duration, wg *sync.WaitGroup) agilepool.Tas
 
 // runSubmitter dispatches task submission according to SubmitConfig.
 // Blocks until all tasks are submitted and processed.
-func runSubmitter(pool *agilepool.Pool, cfg SubmitConfig, numTasks int, durFn func() time.Duration) {
+func runSubmitter(pool *agilepool.Pool, cfg SubmitConfig, numTasks int, durFn func() time.Duration, hookMode string) {
 	switch cfg.Type {
 	case SubmitImmediate:
-		runImmediate(pool, numTasks, durFn)
+		runImmediate(pool, numTasks, durFn, hookMode)
 	case SubmitLinear:
-		runTimedSubmit(pool, numTasks, durFn, time.Duration(cfg.IntervalMs)*time.Millisecond, time.Duration(cfg.JitterMs)*time.Millisecond, false)
+		runTimedSubmit(pool, numTasks, durFn, time.Duration(cfg.IntervalMs)*time.Millisecond, time.Duration(cfg.JitterMs)*time.Millisecond, false, hookMode)
 	case SubmitConstant:
-		runTimedSubmit(pool, numTasks, durFn, time.Duration(cfg.IntervalMs)*time.Millisecond, 0, true)
+		runTimedSubmit(pool, numTasks, durFn, time.Duration(cfg.IntervalMs)*time.Millisecond, 0, true, hookMode)
 	case SubmitPoisson:
-		runTimedSubmit(pool, numTasks, durFn, time.Duration(cfg.PoissonMeanMs)*time.Millisecond, 0, false)
+		runTimedSubmit(pool, numTasks, durFn, time.Duration(cfg.PoissonMeanMs)*time.Millisecond, 0, false, hookMode)
 	case SubmitPhased:
-		runPhased(pool, cfg, durFn)
+		runPhased(pool, cfg, durFn, hookMode)
 	}
 }
 
-func runImmediate(pool *agilepool.Pool, n int, durFn func() time.Duration) {
+func runImmediate(pool *agilepool.Pool, n int, durFn func() time.Duration, hookMode string) {
 	for i := 0; i < n; i++ {
-		pool.Submit(newTask(durFn))
+		submitTask(pool, durFn, hookMode)
 	}
 	pool.Wait()
 }
 
-func runTimedSubmit(pool *agilepool.Pool, n int, durFn func() time.Duration, baseInterval, jitter time.Duration, isConstant bool) {
+func runTimedSubmit(pool *agilepool.Pool, n int, durFn func() time.Duration, baseInterval, jitter time.Duration, isConstant bool, hookMode string) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 
@@ -421,7 +437,9 @@ func runTimedSubmit(pool *agilepool.Pool, n int, durFn func() time.Duration, bas
 		baseNs := float64(baseInterval)
 		jitterNs := float64(jitter)
 		for i := 0; i < n; i++ {
-			pool.Submit(newTaskWithWG(durFn, &wg))
+			if !submitTaskWithWG(pool, durFn, &wg, hookMode) {
+				wg.Done()
+			}
 
 			var delay time.Duration
 			switch {
@@ -448,7 +466,7 @@ func runTimedSubmit(pool *agilepool.Pool, n int, durFn func() time.Duration, bas
 // Each shard has its own token channel, a dispenser goroutine, and
 // multiple submitters. Tokens control the submission rate; the pool's
 // worker capacity caps actual concurrency.
-func runPhased(pool *agilepool.Pool, cfg SubmitConfig, durFn func() time.Duration) {
+func runPhased(pool *agilepool.Pool, cfg SubmitConfig, durFn func() time.Duration, hookMode string) {
 	if len(cfg.Phases) == 0 {
 		return
 	}
@@ -469,7 +487,7 @@ func runPhased(pool *agilepool.Pool, cfg SubmitConfig, durFn func() time.Duratio
 	for s := 0; s < shards; s++ {
 		tokenCh := make(chan struct{}, 10000)
 		go dispenseTokens(tokenCh, cfg.Phases, shards, s)
-		submitPhasedTasks(pool, tokenCh, submittersPerShard, &submitWG, &totalSubmitted, durFn)
+		submitPhasedTasks(pool, tokenCh, submittersPerShard, &submitWG, &totalSubmitted, durFn, hookMode)
 	}
 
 	submitWG.Wait()
@@ -514,14 +532,14 @@ func dispenseTokens(tokenCh chan<- struct{}, phases []Phase, shards, shardID int
 
 // submitPhasedTasks launches submitters that read tokens and submit real
 // tasks (with durFn) to the pool. Stops when the token channel is closed.
-func submitPhasedTasks(pool *agilepool.Pool, tokenCh <-chan struct{}, submitters int, wg *sync.WaitGroup, total *int64, durFn func() time.Duration) {
+func submitPhasedTasks(pool *agilepool.Pool, tokenCh <-chan struct{}, submitters int, wg *sync.WaitGroup, total *int64, durFn func() time.Duration, hookMode string) {
 	for g := 0; g < submitters; g++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for range tokenCh {
 				atomic.AddInt64(total, 1)
-				pool.Submit(newTask(durFn))
+				submitTask(pool, durFn, hookMode)
 			}
 		}()
 	}
