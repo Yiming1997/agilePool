@@ -278,6 +278,31 @@ pool.SetHook(h)
 - The task itself is not passed to callbacks; carry per-task data through `ctx` via `SubmitCtx`.
 - Register before the pool starts processing tasks: the hook set is read without synchronization on every dispatch. A custom implementation only needs the five methods of `agilepool.Hooks`.
 
+### Runtime-mutable hooks (optional)
+
+`hook/dynamic` is an opt-in dispatcher for applications that need to add
+callbacks after the pool begins processing tasks. Each event uses the callback
+snapshot current when that event starts; callbacks registered during dispatch
+apply only to later events. Different lifecycle events for the same task can
+therefore observe different snapshots. Use the default `hook` package when
+callbacks are fixed at startup and the lowest dispatch overhead is preferred.
+
+```go
+import (
+	"context"
+
+	dynamichook "github.com/Yiming1997/agilePool/v2/hook/dynamic"
+)
+
+h := dynamichook.NewHooks()
+pool.SetHook(h)
+
+// Safe while the pool is running; applies to future events.
+h.AddTaskCompleted(func(ctx context.Context, recovered any) {
+	// record a temporary diagnostic signal
+})
+```
+
 ## Benchmark
 
 A comprehensive benchmark suite comparing agilePool against other popular Go goroutine pools is available at [agilePool-benchmark](https://github.com/Yiming1997/agilePool-benchmark).

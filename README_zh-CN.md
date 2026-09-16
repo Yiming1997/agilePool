@@ -278,6 +278,26 @@ pool.SetHook(h)
 - 回调不再接收 Task 本身，按任务携带数据请用 `SubmitCtx` 写入 ctx。
 - 必须在池开始处理任务前注册：每次分发都会无同步地读取钩子集合。自定义实现只需满足 `agilepool.Hooks` 的五个方法。
 
+### 运行时可变 Hook（可选）
+
+`hook/dynamic` 是一个可选分发器，适用于需要在池已经开始处理任务后继续添加回调的应用。每个事件开始分发时使用当前的回调快照；分发期间新增的回调只对后续事件生效。因此，同一任务的不同生命周期事件可能观察到不同快照。若回调在启动阶段就固定，且更关注最低分发开销，请继续使用默认 `hook` 包。
+
+```go
+import (
+	"context"
+
+	dynamichook "github.com/Yiming1997/agilePool/v2/hook/dynamic"
+)
+
+h := dynamichook.NewHooks()
+pool.SetHook(h)
+
+// 池运行期间也可安全注册；仅影响后续事件。
+h.AddTaskCompleted(func(ctx context.Context, recovered any) {
+	// 记录临时诊断信号
+})
+```
+
 ## 基准测试
 
 完整的基准测试套件对比了 agilePool 与其他主流 Go goroutine 池的性能表现，详见 [agilePool-benchmark](https://github.com/Yiming1997/agilePool-benchmark)。
