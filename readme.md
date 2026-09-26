@@ -13,6 +13,10 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Yiming1997/agilePool" alt="License"></a>
 </p>
 
+<p align="center">
+  <b>Official Website:</b> <a href="https://agilepool.stardreamer.cloud">agilepool.stardreamer.cloud</a>
+</p>
+
 [简体中文](README_zh-CN.md)
 
 `agilePool` is a high-performance goroutine pool for Go. It features **adaptive worker scaling** driven by sliding-window rate statistics, bounded concurrency, idle worker reuse, unbounded task buffering with backpressure, retryable tasks, and graceful shutdown — ideal for applications submitting millions of small asynchronous jobs without unbounded goroutine growth.
