@@ -124,13 +124,14 @@ func (w *worker) runTask(task Task) {
 	}
 
 	// Capture task panics so the Completed hook can observe the recovered
-	// value. dispatchHook guards the hook call itself; w.pool.done() above
-	// runs afterwards regardless of what the hooks do.
+	// value. The configured PanicHandler (or the default logger) is invoked
+	// via w.pool.handlePanic; w.pool.done() above runs afterwards regardless
+	// of what the hooks or handler do.
 	var recovered any
 	defer func() {
 		if p := recover(); p != nil {
 			recovered = p
-			w.pool.logger.Printf("worker exits from panic: %v\n%s\n", p, Stack(1))
+			w.pool.handlePanic(task, p, Stack(1))
 		}
 		w.pool.dispatchHook(func(h Hooks) {
 			h.DispatchTaskCompleted(hookCtx, recovered)

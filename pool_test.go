@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -449,6 +450,100 @@ func TestAgilePoolTaskPanicDoesNotBreakPool(t *testing.T) {
 	agilePool.Wait()
 
 	assert.Equal(t, int64(2), atomic.LoadInt64(&executed))
+}
+
+// TestAgilePoolCustomPanicHandler verifies that a handler registered via
+// WithPanicHandler receives the panicking task, the recovered value and the
+// captured stack trace, and that the worker keeps servicing subsequent tasks.
+func TestAgilePoolCustomPanicHandler(t *testing.T) {
+	var (
+		calls    int64
+		gotTask  atomic.Value
+		gotValue atomic.Value
+		gotStack atomic.Value
+	)
+
+	agilePool := agilepool.NewPool(agilepool.NewConfig(
+		agilepool.WithWorkerNumCapacity(1),
+		agilepool.WithTaskQueueSize(10),
+		agilepool.WithPanicHandler(func(task agilepool.Task, recovered any, stack []byte) {
+			atomic.AddInt64(&calls, 1)
+			gotTask.Store(task)
+			gotValue.Store(recovered)
+			gotStack.Store(string(stack))
+		}),
+	))
+	defer agilePool.Close()
+
+	panicked := agilepool.TaskFunc(func() error {
+		panic("custom-handler-boom")
+	})
+	agilePool.Submit(panicked)
+
+	var executed int64
+	agilePool.Submit(agilepool.TaskFunc(func() error {
+		atomic.AddInt64(&executed, 1)
+		return nil
+	}))
+
+	done := make(chan struct{})
+	go func() {
+		agilePool.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pool.Wait() timed out after a task panic")
+	}
+
+	assert.Equal(t, int64(1), atomic.LoadInt64(&calls))
+	assert.Equal(t, "custom-handler-boom", gotValue.Load())
+	assert.Equal(t, int64(1), atomic.LoadInt64(&executed))
+
+	// The exact task that panicked must be forwarded, not a wrapper.
+	assert.Equal(t,
+		reflect.ValueOf(panicked).Pointer(),
+		reflect.ValueOf(gotTask.Load()).Pointer(),
+	)
+
+	// A non-empty, formatted stack trace must be provided.
+	stack, _ := gotStack.Load().(string)
+	assert.Contains(t, stack, "worker.go")
+}
+
+// TestAgilePoolPanicHandlerPanicIsRecovered guards Pool.handlePanic: a
+// PanicHandler that itself panics must be recovered so the worker goroutine
+// survives and Wait() still returns.
+func TestAgilePoolPanicHandlerPanicIsRecovered(t *testing.T) {
+	agilePool := agilepool.NewPool(agilepool.NewConfig(
+		agilepool.WithWorkerNumCapacity(1),
+		agilepool.WithTaskQueueSize(10),
+		agilepool.WithPanicHandler(func(agilepool.Task, any, []byte) {
+			panic("handler boom")
+		}),
+	))
+	agilePool.SetLogger(log.New(io.Discard, "", 0))
+	defer agilePool.Close()
+
+	var executed int64
+	agilePool.Submit(agilepool.TaskFunc(func() error { panic("task boom") }))
+	agilePool.Submit(agilepool.TaskFunc(func() error {
+		atomic.AddInt64(&executed, 1)
+		return nil
+	}))
+
+	done := make(chan struct{})
+	go func() {
+		agilePool.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait() blocked after the panic handler panicked")
+	}
+	assert.Equal(t, int64(1), atomic.LoadInt64(&executed))
 }
 
 // TestAgilePoolBatchWithScaler verifies that the scaler spawns workers to

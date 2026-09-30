@@ -1,4 +1,4 @@
-﻿package agilepool
+package agilepool
 
 import (
 	"time"
@@ -43,9 +43,24 @@ type Config struct {
 	statsWindowSize    int           // number of windows for median calculation
 	scalerPeriod       time.Duration // scaler tick interval (e.g. 50ms)
 	backlogDecayFactor float64       // queue backlog weight in scaler target (0-1)
+	panicHandler       PanicHandler  // custom task-panic handler (nil keeps default logging)
 }
 
 type ConfigOption func(*Config)
+
+// PanicHandler is invoked when a task panics while running inside a worker.
+// Setting one with WithPanicHandler replaces the pool's default behaviour of
+// logging the recovered value and stack trace, letting callers route panics
+// to their own error reporting.
+//
+//   - task:      the task whose execution panicked
+//   - recovered: the value passed to panic
+//   - stack:     formatted call stack captured at the recovery point
+//
+// A nil handler keeps the default logging behaviour. A handler that panics is
+// itself recovered and logged, so it can never crash the worker goroutine or
+// skip task-completion bookkeeping; see Pool.handlePanic.
+type PanicHandler func(task Task, recovered any, stack []byte)
 
 func NewConfig(opts ...ConfigOption) *Config {
 	config := &Config{
@@ -146,5 +161,14 @@ func WithBacklogDecayFactor(factor float64) ConfigOption {
 		if factor >= 0 && factor <= 1 {
 			c.backlogDecayFactor = factor
 		}
+	}
+}
+
+// WithPanicHandler installs a custom handler invoked when a task panics inside
+// a worker, replacing the default logger-based reporting. Pass nil to keep the
+// default behaviour.
+func WithPanicHandler(handler PanicHandler) ConfigOption {
+	return func(c *Config) {
+		c.panicHandler = handler
 	}
 }

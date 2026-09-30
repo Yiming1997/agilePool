@@ -100,7 +100,8 @@ type Pool struct {
 	consumeHist *histogram // consume count distribution per window
 	exitHist    *histogram // exit count distribution per window
 
-	hooks Hooks // lifecycle callbacks registered via SetHook
+	hooks        Hooks        // lifecycle callbacks registered via SetHook
+	panicHandler PanicHandler // custom task-panic handler (nil keeps default logging)
 }
 
 func NewPool(c *Config) *Pool {
@@ -108,14 +109,15 @@ func NewPool(c *Config) *Pool {
 		c = NewConfig()
 	}
 	p := &Pool{
-		closePoolCn: make(chan struct{}),
-		config:      c,
-		lock:        &sync.Mutex{},
-		muIdle:      &sync.Mutex{}, // default value, overridden below based on config
-		logger:      log.Default(),
-		capacity:    c.workerNumCapacity,
-		taskQueue:   make(chan Task, c.taskQueueSize),
-		taskBuf:     newChunkedTaskBuffer(),
+		closePoolCn:  make(chan struct{}),
+		config:       c,
+		lock:         &sync.Mutex{},
+		muIdle:       &sync.Mutex{}, // default value, overridden below based on config
+		logger:       log.Default(),
+		capacity:     c.workerNumCapacity,
+		taskQueue:    make(chan Task, c.taskQueueSize),
+		taskBuf:      newChunkedTaskBuffer(),
+		panicHandler: c.panicHandler,
 	}
 
 	// Select muIdle lock implementation based on config: SpinLock or MutexLock (sync.Mutex)
@@ -624,4 +626,24 @@ func (p *Pool) dispatchHook(fn func(h Hooks)) {
 		}
 	}()
 	fn(p.hooks)
+}
+
+// handlePanic reports a task panic that was recovered by the worker's runTask
+// defer. When a PanicHandler is configured it takes over; otherwise the
+// recovered value and stack trace are written to the pool logger, preserving
+// the historical default. A panicking handler is itself recovered and logged
+// so it cannot crash the worker goroutine or skip the task-completion hook
+// that runTask dispatches afterwards.
+func (p *Pool) handlePanic(task Task, recovered any, stack []byte) {
+	handler := p.panicHandler
+	if handler == nil {
+		p.logger.Printf("worker exits from panic: %v\n%s\n", recovered, stack)
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Printf("panic handler panicked: %v\n%s\n", r, Stack(1))
+		}
+	}()
+	handler(task, recovered, stack)
 }
