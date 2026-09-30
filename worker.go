@@ -9,6 +9,9 @@ import (
 type worker struct {
 	pool         *Pool
 	lastActiveAt time.Time
+	// cursor is the shard index this worker starts scanning from. A per-worker
+	// start point spreads channel-lock pressure across the handoff shards.
+	cursor uint64
 }
 
 // DatedTime returns the last-active timestamp of the worker.
@@ -36,78 +39,68 @@ func (w *worker) run(task Task) {
 	// *worker via Pop and workerPool.Get respectively, causing a data race
 	// on w.lastActiveAt and phantom duplicates in idleWorks.
 
-loop:
 	for {
-		select {
-		case task, ok := <-w.pool.taskQueue:
-			if !ok {
-				w.pool.logger.Println("taskQueue closed,exiting")
-				w.pool.addRunningWorkersNum(-1)
-				atomic.AddInt64(&w.pool.exitCount, 1)
-				w.pool.workerPool.Put(w)
-				return
-			}
-
-			if task == nil {
-				w.pool.logger.Println("nil task received, exiting")
-				w.pool.addRunningWorkersNum(-1)
-				atomic.AddInt64(&w.pool.exitCount, 1)
-				w.pool.workerPool.Put(w)
-				return
-			}
+		// Drain the handoff-queue shards first. Scanning replaces the old
+		// double non-blocking channel poll: a task is taken from the first
+		// shard that has one, so a busy queue is served with a single channel
+		// lock while lock pressure is spread across all shards.
+		if t, ok := w.nextShardTask(); ok {
 			w.lastActiveAt = time.Now()
-			w.runTask(task)
+			w.runTask(t)
+			continue
+		}
 
-		default:
-			// Try the chunked buffer before the second channel check.
-			// Grab a batch of up to 8 tasks per lock acquisition to
-			// amortise the mutex overhead across multiple tasks and
-			// reduce contention with the submission path.
-			const batchSize = 8
-			var batch [batchSize]Task
-			n := w.pool.taskBuf.PopBatch(batch[:])
+		// Fall back to the chunked overflow buffer, grabbing a batch per lock
+		// acquisition to amortise the mutex overhead and reduce contention
+		// with the submission path.
+		const batchSize = 8
+		var batch [batchSize]Task
+		n := w.pool.taskBuf.PopBatch(batch[:])
+		if n > 0 {
 			for i := 0; i < n; i++ {
 				w.lastActiveAt = time.Now()
 				w.runTask(batch[i])
 			}
-			if n > 0 {
+			continue
+		}
+
+		// Park: both the shards and the overflow buffer are empty. Decrement
+		// the running count so the scaler can spawn replacements when new work
+		// arrives, then hand the worker back to the idle container.
+		// Do NOT also put w in workerPool.sync.Pool — see the note above.
+		w.pool.addRunningWorkersNum(-1)
+		atomic.AddInt64(&w.pool.exitCount, 1)
+		w.pool.addToIdle(w)
+		return
+	}
+}
+
+// nextShardTask scans the handoff-queue shards, starting from this worker's
+// cursor, and returns the first available task. The cursor advances to the
+// shard that yielded the task so subsequent polls stay on a warm shard and a
+// worker keeps hitting the same shard while under load. The pool never closes
+// these channels, so a closed channel is treated as empty to avoid a busy loop
+// if that ever changes.
+func (w *worker) nextShardTask() (Task, bool) {
+	p := w.pool
+	n := uint64(len(p.taskQueues))
+	if n == 0 {
+		return nil, false
+	}
+	start := w.cursor
+	for i := uint64(0); i < n; i++ {
+		idx := (start + i) & p.shardMask
+		select {
+		case t, ok := <-p.taskQueues[idx]:
+			if !ok || t == nil {
 				continue
 			}
-
-			// Lock-free second check: catch tasks that arrived in the
-			// tiny window between the two select polls. Submit no longer
-			// holds p.lock, so serialisation via lock is unnecessary.
-			// If a task slips through both selects, the scaler will
-			// spawn workers within scalerPeriod (10ms) to pick it up.
-			select {
-			case task, ok := <-w.pool.taskQueue:
-				if !ok {
-					w.pool.logger.Println("taskQueue closed,exiting")
-					w.pool.addRunningWorkersNum(-1)
-					atomic.AddInt64(&w.pool.exitCount, 1)
-					w.pool.workerPool.Put(w)
-					return
-				}
-				if task == nil {
-					w.pool.logger.Println("nil task received, exiting")
-					w.pool.addRunningWorkersNum(-1)
-					atomic.AddInt64(&w.pool.exitCount, 1)
-					w.pool.workerPool.Put(w)
-					return
-				}
-				w.lastActiveAt = time.Now()
-				w.runTask(task)
-			default:
-				// Parking: no task found in second check, worker goes idle.
-				// Do NOT also put w in workerPool.sync.Pool — see the
-				// note at the top of run().
-				w.pool.addRunningWorkersNum(-1)
-				atomic.AddInt64(&w.pool.exitCount, 1)
-				w.pool.addToIdle(w)
-				break loop
-			}
+			w.cursor = idx
+			return t, true
+		default:
 		}
 	}
+	return nil, false
 }
 
 func (w *worker) runTask(task Task) {

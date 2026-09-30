@@ -32,6 +32,14 @@ const (
 	// When reached, submitters block on the handoff channel instead of
 	// growing the buffer further, bounding peak memory.
 	maxChunkLen = 100_000
+
+	// minShardableQueueSize is the smallest handoff capacity that is split
+	// into multiple shards. Smaller queues stay single-channel so the exact
+	// backpressure behaviour of tiny configurations is preserved.
+	minShardableQueueSize = 1024
+
+	// maxAutoShards caps the shard count chosen automatically from GOMAXPROCS.
+	maxAutoShards = 32
 )
 
 type WorkMode int8
@@ -65,7 +73,11 @@ func GetDefaultPool() *Pool {
 }
 
 type Pool struct {
-	taskQueue         chan Task
+	taskQueues        []chan Task // sharded handoff queues; len is a power of two
+	shardMask         uint64      // len(taskQueues)-1, enables mask-based shard selection
+	sendSeq           uint64      // atomic round-robin cursor picking the target shard
+	workerSeq         uint64      // atomic cursor assigning distinct scan start shards
+	taskQueueSize     int         // configured total handoff capacity (GetTaskQueueCapacity)
 	closePoolCn       chan struct{}
 	capacity          int64 // The maximum number of workers in the pool.
 	runningWorkersNum int64
@@ -115,10 +127,24 @@ func NewPool(c *Config) *Pool {
 		muIdle:       &sync.Mutex{}, // default value, overridden below based on config
 		logger:       log.Default(),
 		capacity:     c.workerNumCapacity,
-		taskQueue:    make(chan Task, c.taskQueueSize),
 		taskBuf:      newChunkedTaskBuffer(),
 		panicHandler: c.panicHandler,
 	}
+
+	// Shard the handoff queue so a very large worker count does not serialise
+	// on a single channel lock. Each shard gets at least one slot and the
+	// total capacity stays >= the configured value.
+	shardCount := resolveTaskQueueShards(c)
+	perShardCap := (int(c.taskQueueSize) + shardCount - 1) / shardCount
+	if perShardCap < 1 {
+		perShardCap = 1
+	}
+	p.taskQueues = make([]chan Task, shardCount)
+	for i := range p.taskQueues {
+		p.taskQueues[i] = make(chan Task, perShardCap)
+	}
+	p.shardMask = uint64(shardCount - 1)
+	p.taskQueueSize = int(c.taskQueueSize)
 
 	// Select muIdle lock implementation based on config: SpinLock or MutexLock (sync.Mutex)
 	if c.lockType == SpinLock {
@@ -157,6 +183,35 @@ func NewPool(c *Config) *Pool {
 	go p.scaler()
 	defaultPool.Store(p)
 	return p
+}
+
+// resolveTaskQueueShards returns the number of handoff-queue shards to use.
+// The result is always a power of two so the round-robin cursor can be masked
+// cheaply. An explicit Config value wins; otherwise small queues stay
+// single-channel and large queues scale with GOMAXPROCS (capped).
+func resolveTaskQueueShards(c *Config) int {
+	want := c.taskQueueShards
+	if want <= 0 {
+		if c.taskQueueSize < minShardableQueueSize {
+			return 1
+		}
+		want = runtime.GOMAXPROCS(0)
+		if want > maxAutoShards {
+			want = maxAutoShards
+		}
+	}
+	if want < 1 {
+		want = 1
+	}
+	shards := 1
+	for shards < want {
+		shards <<= 1
+	}
+	// Each shard needs at least one slot; never exceed the configured capacity.
+	for int64(shards) > c.taskQueueSize && shards > 1 {
+		shards >>= 1
+	}
+	return shards
 }
 
 // SetLogger replaces the default standard-library logger.
@@ -215,7 +270,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 	if atomic.LoadInt64(&p.runningWorkersNum) == 0 {
 		if atomic.CompareAndSwapInt64(&p.runningWorkersNum, 0, 1) {
 			w := p.workerPool.Get().(*worker)
-			go w.run(nil)
+			p.startWorker(w)
 		}
 	}
 	hookCtx := context.Background()
@@ -226,8 +281,9 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 		h.DispatchTaskSubmitted(hookCtx)
 	})
 	if p.config.workMode == NONBLOCK {
+		q := p.nextShard()
 		select {
-		case p.taskQueue <- task:
+		case q <- task:
 			p.dispatchTaskEnqueuedFor(task)
 			return true
 		default:
@@ -236,8 +292,9 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 		}
 	}
 
+	q := p.nextShard()
 	select {
-	case p.taskQueue <- task:
+	case q <- task:
 		p.dispatchTaskEnqueuedFor(task)
 		return true
 	default:
@@ -245,7 +302,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 
 	result := p.taskBuf.PushAndForward(task, func(t Task) bool {
 		select {
-		case p.taskQueue <- t:
+		case p.nextShard() <- t:
 			return true
 		default:
 			return false
@@ -261,8 +318,9 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 		// SubmitCtx promises that cancellation interrupts this wait. Listening
 		// for pool shutdown also prevents a blocked submitter from being left
 		// behind after Close.
+		q = p.nextShard()
 		select {
-		case p.taskQueue <- task:
+		case q <- task:
 			p.dispatchTaskEnqueuedFor(task)
 			return true
 		case <-ctx.Done():
@@ -362,6 +420,21 @@ func (p *Pool) addToIdle(w *worker) {
 
 func (p *Pool) addRunningWorkersNum(num int64) {
 	atomic.AddInt64(&p.runningWorkersNum, num)
+}
+
+// nextShard returns the handoff queue for the next submission using a lock-free
+// round-robin cursor, spreading producer traffic across shards so that no
+// single channel lock becomes a contention hotspot.
+func (p *Pool) nextShard() chan Task {
+	seq := atomic.AddUint64(&p.sendSeq, 1)
+	return p.taskQueues[seq&p.shardMask]
+}
+
+// startWorker launches w's run loop, assigning it a round-robin scan start
+// shard so freshly spawned workers do not all probe the same shard first.
+func (p *Pool) startWorker(w *worker) {
+	w.cursor = atomic.AddUint64(&p.workerSeq, 1) & p.shardMask
+	go w.run(nil)
 }
 
 func (p *Pool) expiredWorkerCleaner() {
@@ -500,7 +573,7 @@ func (p *Pool) scaleIfNeeded() {
 			w = p.workerPool.Get().(*worker)
 		}
 		p.muIdle.Unlock()
-		go w.run(nil)
+		p.startWorker(w)
 		p.muIdle.Lock()
 	}
 	p.muIdle.Unlock()
@@ -576,14 +649,19 @@ func (p *Pool) GetWorkerCreateCount() int64 {
 // up by a worker. This is a snapshot of len(taskQueue) and does not
 // include tasks waiting in the chunked overflow buffer.
 func (p *Pool) GetTaskQueueLen() int {
-	// Returns the number of tasks that have been submitted but not yet enqueued for execution.
-	return len(p.taskQueue)
+	// Returns the number of tasks across all handoff-queue shards that have
+	// been submitted but not yet picked up by a worker.
+	total := 0
+	for _, q := range p.taskQueues {
+		total += len(q)
+	}
+	return total
 }
 
 // GetTaskQueueCapacity returns the capacity of the handoff channel
 // (taskQueue) configured for this pool.
 func (p *Pool) GetTaskQueueCapacity() int {
-	return cap(p.taskQueue)
+	return p.taskQueueSize
 }
 
 // GetIdleWorkerCount returns the number of workers currently parked in

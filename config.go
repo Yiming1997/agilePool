@@ -34,7 +34,8 @@ const (
 
 type Config struct {
 	cleanPeriod        time.Duration
-	taskQueueSize      int64 // capacity of the internal handoff channel
+	taskQueueSize      int64 // total capacity of the internal handoff queues
+	taskQueueShards    int   // number of handoff-queue shards; 0 = auto
 	workerNumCapacity  int64
 	workMode           WorkMode
 	idleContainerType  IdleContainerType
@@ -97,6 +98,18 @@ func WithTaskQueueSize(size int64) ConfigOption {
 		if size > 0 {
 			c.taskQueueSize = size
 		}
+	}
+}
+
+// WithTaskQueueShards sets how many shards the internal handoff queue is split
+// into. Sharding spreads channel-lock contention across multiple channel locks,
+// which matters when the pool runs a very large number of workers that would
+// otherwise serialise on a single channel. The value is rounded up to a power
+// of two and each shard gets at least one slot. n <= 0 selects a default: a
+// single shard for small queues and GOMAXPROCS (capped) for large ones.
+func WithTaskQueueShards(n int) ConfigOption {
+	return func(c *Config) {
+		c.taskQueueShards = n
 	}
 }
 
