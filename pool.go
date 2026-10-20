@@ -409,14 +409,15 @@ func (t *contextTask) process() {
 	t.task.process()
 }
 
-// Submits a task with a start timeout. If timeout is reached before execution, the task is skipped.
+// SubmitBefore submits a task with a start timeout. If the deadline expires
+// while waiting for queue space or before execution, the task is skipped.
 func (p *Pool) SubmitBefore(task Task, timeout time.Duration) {
 	if isNilTask(task) {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	p.Submit(
+	accepted := p.submit(ctx,
 		TaskFunc(func() error {
 			defer cancel() // Ensures context is released after task completes to avoid resource leak
 			select {
@@ -428,6 +429,9 @@ func (p *Pool) SubmitBefore(task Task, timeout time.Duration) {
 			return nil
 		}),
 	)
+	if !accepted {
+		cancel()
+	}
 }
 
 func isNilTask(task Task) bool {

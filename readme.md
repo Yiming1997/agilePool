@@ -140,7 +140,7 @@ Cancellation semantics:
 
 ### Deadline-bound submission
 
-`SubmitBefore` schedules a task with a timeout window. If the deadline expires before the worker picks up the task, it is skipped.
+`SubmitBefore` schedules a task with a timeout window. If the deadline expires before the worker picks up the task, it is skipped. In `BLOCK` mode, a call waiting at the backpressure limit also returns when the deadline expires, without enqueueing the task.
 
 ```go
 pool.SubmitBefore(
