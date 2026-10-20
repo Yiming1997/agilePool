@@ -247,16 +247,10 @@ func TestStressGracefulShutdown(t *testing.T) {
 	}
 }
 
-// TestStressCloseWhileSubmitting is a KNOWN pre-existing issue, not caused by
-// the sharded handoff queue. Pool.submit() calls wg.Add(1) BEFORE checking the
-// closed flag, so calling Wait() while producers are still submitting after
-// Close() can panic with "sync: WaitGroup misuse: Add called concurrently with
-// Wait". The same panic reproduces on the pre-sharding implementation. Skipped
-// by default; run explicitly to reproduce:
-//
-//	go test -run TestStressCloseWhileSubmitting -count=1 .
+// TestStressCloseWhileSubmitting verifies that Close followed by Wait remains
+// safe while producers continue attempting submissions. Every accepted task
+// must complete, and rejected submissions must not register new work.
 func TestStressCloseWhileSubmitting(t *testing.T) {
-	t.Skip("known pre-existing WaitGroup misuse: Close()+Wait() while producers still submit")
 	for iter := 0; iter < 50; iter++ {
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithWorkerNumCapacity(32),
@@ -264,6 +258,7 @@ func TestStressCloseWhileSubmitting(t *testing.T) {
 		))
 
 		var executed int64
+		var accepted int64
 		var wg sync.WaitGroup
 		stop := make(chan struct{})
 		for s := 0; s < 8; s++ {
@@ -276,26 +271,36 @@ func TestStressCloseWhileSubmitting(t *testing.T) {
 						return
 					default:
 					}
-					pool.Submit(agilepool.TaskFunc(func() error {
+					if pool.TrySubmit(agilepool.TaskFunc(func() error {
 						atomic.AddInt64(&executed, 1)
 						return nil
-					}))
+					})) {
+						atomic.AddInt64(&accepted, 1)
+					}
 				}
 			}()
 		}
 
 		time.Sleep(time.Duration(iter%5) * time.Millisecond)
 		pool.Close()
+		if pool.TrySubmit(agilepool.TaskFunc(func() error { return nil })) {
+			t.Fatal("TrySubmit accepted a task after Close")
+		}
 
 		done := make(chan struct{})
 		go func() { pool.Wait(); close(done) }()
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
-			t.Fatalf("iter %d: Wait() hung after Close (executed=%d)", iter, atomic.LoadInt64(&executed))
+			t.Fatalf("iter %d: Wait() hung after Close (executed=%d, accepted=%d, running=%d, queued=%d, idle=%d)",
+				iter, atomic.LoadInt64(&executed), atomic.LoadInt64(&accepted),
+				pool.GetRunningWorkersNum(), pool.GetTaskQueueLen(), pool.GetIdleWorkerCount())
 		}
 		close(stop)
 		wg.Wait()
+		if got, want := atomic.LoadInt64(&executed), atomic.LoadInt64(&accepted); got != want {
+			t.Fatalf("iter %d: executed %d tasks, accepted %d", iter, got, want)
+		}
 	}
 }
 
