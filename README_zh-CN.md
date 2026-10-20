@@ -139,7 +139,7 @@ pool.SubmitCtx(ctx, agilepool.TaskFunc(func() error {
 
 ### 带超时提交
 
-`SubmitBefore` 给任务设置执行截止时间。若 worker 取到任务时已超时，则跳过。
+`SubmitBefore` 给任务设置执行截止时间。若 worker 取到任务时已超时，则跳过。`BLOCK` 模式下若已达到背压上限，等待提交的调用也会在截止时间到达时返回，不再入队该任务。
 
 ```go
 pool.SubmitBefore(
