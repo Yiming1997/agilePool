@@ -252,8 +252,27 @@ func TestAgilePoolSubmitCtxCancelsAtBackpressureLimit(t *testing.T) {
 		t.Fatal("SubmitCtx did not return after cancellation at the backpressure limit")
 	}
 
+	// SubmitBefore must use its deadline while waiting for queue space too.
+	beforeReturned := make(chan struct{})
+	var beforeExecuted atomic.Int64
+	go func() {
+		agilePool.SubmitBefore(agilepool.TaskFunc(func() error {
+			beforeExecuted.Add(1)
+			return nil
+		}), 20*time.Millisecond)
+		close(beforeReturned)
+	}()
+	select {
+	case <-beforeReturned:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("SubmitBefore did not return after its deadline at the backpressure limit")
+	}
+
 	close(release)
 	agilePool.Wait()
+	if got := beforeExecuted.Load(); got != 0 {
+		t.Fatalf("SubmitBefore task executed after its deadline: %d", got)
+	}
 }
 
 func TestAgilePoolWorkerCapacityLimit(t *testing.T) {
