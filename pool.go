@@ -647,6 +647,9 @@ func (p *Pool) scaler() {
 }
 
 // Close marks the pool as closed and stops its background cleaner goroutine.
+// The sampler and scaler keep running until all registered tasks finish. If a
+// task never finishes, Wait and the internal drain goroutine remain blocked,
+// and the sampler and scaler remain active.
 // After Close:
 //   - new Submit calls become no-ops (the task is dropped, no goroutine is started)
 //   - in-flight tasks already submitted continue to run to completion

@@ -236,6 +236,8 @@ pool.Wait()
 pool.Close()
 ```
 
+`Close()` does not wait for accepted tasks to finish. The rate sampler and scaler keep running until those tasks complete, so an in-flight submission during shutdown is not left queued without a worker. If a task blocks forever, `Wait()` remains blocked, and the internal drain goroutine, sampler, and scaler do not exit; callers should ensure tasks eventually return.
+
 Typical shutdown pattern:
 
 ```go
