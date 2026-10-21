@@ -13,6 +13,7 @@
   <a href="https://goreportcard.com/report/github.com/Yiming1997/agilePool/v2"><img src="https://goreportcard.com/badge/github.com/Yiming1997/agilePool/v2" alt="Go Report Card"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Yiming1997/agilePool" alt="License"></a>
   <a href="https://agilepool.stardreamer.cloud"><img src="https://img.shields.io/badge/Website-agilepool.stardreamer.cloud-2F6FED?logo=googlechrome&logoColor=white" alt="Website"></a>
+  <a href="https://hub.xerj.org/contributors/Yiming1997"><img src="https://hub.xerj.org/contributors/Yiming1997/badge.svg" alt="XERJ Corpus Hub contributor"></a>
 </p>
 
 [简体中文](README_zh-CN.md)
