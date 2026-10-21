@@ -88,11 +88,13 @@ type Pool struct {
 	workerSeq         uint64      // atomic cursor assigning distinct scan start shards
 	taskQueueSize     int         // configured total handoff capacity (GetTaskQueueCapacity)
 	closePoolCn       chan struct{}
-	capacity          int64 // The maximum number of workers in the pool.
+	drainDone         chan struct{} // closed after every registered task finishes
+	capacity          int64         // The maximum number of workers in the pool.
 	runningWorkersNum int64
-	closed            int32       // 1 once Close has been called, otherwise 0
-	muIdle            sync.Locker // idle container lock: sync.Mutex for MutexLock, spin lock for SpinLock
-	workerPool        sync.Pool   // Worker object pool
+	closed            int32        // 1 once Close has been called, otherwise 0
+	submitGate        sync.RWMutex // orders task registration with Close
+	muIdle            sync.Locker  // idle container lock: sync.Mutex for MutexLock, spin lock for SpinLock
+	workerPool        sync.Pool    // Worker object pool
 	idleWorks         idle.IdleContainer[*worker]
 	config            *Config
 	lock              *sync.Mutex
@@ -136,6 +138,7 @@ func NewPool(c *Config) *Pool {
 	}
 	p := &Pool{
 		closePoolCn:  make(chan struct{}),
+		drainDone:    make(chan struct{}),
 		config:       c,
 		lock:         &sync.Mutex{},
 		muIdle:       &sync.Mutex{}, // default value, overridden below based on config
@@ -293,11 +296,16 @@ func (p *Pool) SubmitCtx(ctx context.Context, task Task) {
 }
 
 func (p *Pool) submit(ctx context.Context, task Task) bool {
-	p.wg.Add(1)
+	// Close followed by Wait must not race with new positive WaitGroup adds.
+	// Keep the gate only through registration; hooks and queue sends can block
+	// or call back into Close.
+	p.submitGate.RLock()
 	if atomic.LoadInt32(&p.closed) == 1 {
-		p.wg.Done() // Balance the Add above because the closed pool rejects this task.
+		p.submitGate.RUnlock()
 		return false
 	}
+	p.wg.Add(1)
+	p.submitGate.RUnlock()
 	atomic.AddInt64(&p.submitCount, 1)
 	atomic.AddInt64(&p.pendingTasks, 1)
 
@@ -503,7 +511,7 @@ func (p *Pool) statsSampler() {
 		select {
 		case <-ticker.C:
 			p.sampleRates()
-		case <-p.closePoolCn:
+		case <-p.drainDone:
 			return
 		}
 	}
@@ -636,13 +644,16 @@ func (p *Pool) scaler() {
 		select {
 		case <-ticker.C:
 			p.scaleIfNeeded()
-		case <-p.closePoolCn:
+		case <-p.drainDone:
 			return
 		}
 	}
 }
 
 // Close marks the pool as closed and stops its background cleaner goroutine.
+// The sampler and scaler keep running until all registered tasks finish. If a
+// task never finishes, Wait and the internal drain goroutine remain blocked,
+// and the sampler and scaler remain active.
 // After Close:
 //   - new Submit calls become no-ops (the task is dropped, no goroutine is started)
 //   - in-flight tasks already submitted continue to run to completion
@@ -651,14 +662,24 @@ func (p *Pool) scaler() {
 // Close is idempotent and safe to call from any goroutine, including from
 // within a running task.
 func (p *Pool) Close() {
+	p.submitGate.Lock()
 	if !atomic.CompareAndSwapInt32(&p.closed, 0, 1) {
+		p.submitGate.Unlock()
 		return
 	}
+	p.submitGate.Unlock()
 	defaultPool.CompareAndSwap(p, nil)
 
 	p.taskBuf.Close()
 
 	close(p.closePoolCn)
+	// Keep sampling and scaling until all registered work is done. An in-flight
+	// submitter can enqueue after Close while the last worker is parking; if
+	// scaling stopped immediately, that task could be left without a worker.
+	go func() {
+		p.wg.Wait()
+		close(p.drainDone)
+	}()
 	p.dispatchHook(func(h Hooks) {
 		h.DispatchPoolClosed(p) // fire OnPoolClosed hooks
 	})
