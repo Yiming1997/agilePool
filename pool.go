@@ -301,13 +301,6 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 	atomic.AddInt64(&p.submitCount, 1)
 	atomic.AddInt64(&p.pendingTasks, 1)
 
-	// Cold start: if no goroutine is running, spawn one immediately.
-	if atomic.LoadInt64(&p.runningWorkersNum) == 0 {
-		if atomic.CompareAndSwapInt64(&p.runningWorkersNum, 0, 1) {
-			w := p.workerPool.Get().(*worker)
-			p.startWorker(w)
-		}
-	}
 	hookCtx := context.Background()
 	if wrapped, ok := task.(*contextTask); ok {
 		hookCtx = wrapped.ctx
@@ -319,6 +312,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 		q := p.nextShard()
 		select {
 		case q <- task:
+			p.startWorkerIfNone()
 			p.dispatchTaskEnqueuedFor(task)
 			return true
 		default:
@@ -330,6 +324,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 	q := p.nextShard()
 	select {
 	case q <- task:
+		p.startWorkerIfNone()
 		p.dispatchTaskEnqueuedFor(task)
 		return true
 	default:
@@ -356,6 +351,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 		q = p.nextShard()
 		select {
 		case q <- task:
+			p.startWorkerIfNone()
 			p.dispatchTaskEnqueuedFor(task)
 			return true
 		case <-ctx.Done():
@@ -373,6 +369,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 		// access or self-deadlock on taskMu. The trade off is ordering: a
 		// worker may already have consumed the task, so Enqueued can be
 		// observed after Started (and, rarely, after Completed).
+		p.startWorkerIfNone()
 		p.dispatchTaskEnqueuedFor(task)
 		return true
 	}
@@ -474,6 +471,38 @@ func (p *Pool) nextShard() chan Task {
 func (p *Pool) startWorker(w *worker) {
 	w.cursor = atomic.AddUint64(&p.workerSeq, 1) & p.shardMask
 	go w.run(nil)
+}
+
+// startWorkerIfNone repairs the handoff between an enqueue and the last
+// worker parking. Submitters call it after enqueueing; workers recheck after
+// marking themselves parked. Whichever happens second sees the other's state.
+// It may run after Close for a submission already in flight.
+func (p *Pool) startWorkerIfNone() {
+	if atomic.LoadInt64(&p.runningWorkersNum) != 0 ||
+		!atomic.CompareAndSwapInt64(&p.runningWorkersNum, 0, 1) {
+		return
+	}
+	p.muIdle.Lock()
+	w := p.idleWorks.Pop()
+	p.muIdle.Unlock()
+	if w == nil {
+		w = p.workerPool.Get().(*worker)
+	}
+	p.startWorker(w)
+}
+
+// hasQueuedTasks is used only when a worker parks. Submitters also check
+// after enqueueing, closing the gap after this snapshot is taken.
+func (p *Pool) hasQueuedTasks() bool {
+	if atomic.LoadInt64(&p.pendingTasks) == 0 {
+		return false
+	}
+	for _, q := range p.taskQueues {
+		if len(q) > 0 {
+			return true
+		}
+	}
+	return p.taskBuf.Len() > 0
 }
 
 func (p *Pool) expiredWorkerCleaner() {

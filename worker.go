@@ -71,6 +71,11 @@ func (w *worker) run(task Task) {
 		w.pool.addRunningWorkersNum(-1)
 		atomic.AddInt64(&w.pool.exitCount, 1)
 		w.pool.addToIdle(w)
+		// A submitter can see us as running and enqueue after our last scan.
+		// Check again after parking; submitters check after enqueueing too.
+		if w.pool.hasQueuedTasks() {
+			w.pool.startWorkerIfNone()
+		}
 		return
 	}
 }
