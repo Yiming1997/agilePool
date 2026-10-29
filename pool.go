@@ -293,13 +293,16 @@ func (p *Pool) SubmitCtx(ctx context.Context, task Task) {
 }
 
 func (p *Pool) submit(ctx context.Context, task Task) bool {
+	// Increment before the closed check so the scaler cannot observe an empty
+	// pool and stop while this submission is still in flight.
+	atomic.AddInt64(&p.pendingTasks, 1)
 	p.wg.Add(1)
 	if atomic.LoadInt32(&p.closed) == 1 {
+		atomic.AddInt64(&p.pendingTasks, -1)
 		p.wg.Done() // Balance the Add above because the closed pool rejects this task.
 		return false
 	}
 	atomic.AddInt64(&p.submitCount, 1)
-	atomic.AddInt64(&p.pendingTasks, 1)
 
 	// Cold start: if no goroutine is running, spawn one immediately.
 	if atomic.LoadInt64(&p.runningWorkersNum) == 0 {
@@ -494,16 +497,16 @@ func (p *Pool) expiredWorkerCleaner() {
 }
 
 // statsSampler samples the rate counters periodically and records them into
-// the sliding-window histories.
+// the sliding-window histories. It outlives Close so the scaler keeps fresh
+// medians while draining.
 func (p *Pool) statsSampler() {
 	ticker := time.NewTicker(p.config.statsSamplePeriod)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			p.sampleRates()
-		case <-p.closePoolCn:
+	for range ticker.C {
+		p.sampleRates()
+		// Keep sampling until the pool is closed and drained.
+		if atomic.LoadInt32(&p.closed) == 1 && atomic.LoadInt64(&p.pendingTasks) == 0 {
 			return
 		}
 	}
@@ -627,16 +630,17 @@ func (p *Pool) getMedianRates() (submitMed, consumeMed, exitMed float64) {
 }
 
 // scaler periodically checks whether the pool needs more goroutines to keep up
-// with the submission rate, and spawns them proactively.
+// with the submission rate, and spawns them proactively. It outlives Close:
+// accepted tasks still need workers to drain.
 func (p *Pool) scaler() {
 	ticker := time.NewTicker(p.config.scalerPeriod)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			p.scaleIfNeeded()
-		case <-p.closePoolCn:
+	for range ticker.C {
+		p.scaleIfNeeded()
+		// Keep scaling until the pool is closed and drained; stopping at Close
+		// would leave stranded tasks without workers and hang Wait.
+		if atomic.LoadInt32(&p.closed) == 1 && atomic.LoadInt64(&p.pendingTasks) == 0 {
 			return
 		}
 	}
