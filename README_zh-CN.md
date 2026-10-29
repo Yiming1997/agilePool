@@ -95,6 +95,8 @@ defer pool.Close()
 | `WithStatsWindowSize` | `10` | 用于中位数计算的滑动窗口数量。 |
 | `WithScalerPeriod` | `10ms` | 扩缩容器的检查周期。 |
 | `WithBacklogDecayFactor` | `0.3` | 积压在扩缩公式中的权重（0–1）。值越大，扩容越激进。 |
+| `WithZeroConsumeScaleInterval` | `100ms` | 零消费兜底扩容的最小间隔：池子有排队但实测消费速率为 0 时（如空闲后突发长任务），按排队量扩容的频率上限。 |
+| `WithMaxZeroConsumeScaleStep` | `64` | 单次零消费扩容最多新增的 worker 数。 |
 
 > **注意**：`WithTaskQueueSize` 控制内部交接 channel 的容量。超过该容量的任务会进入动态增长的分块缓冲区。
 

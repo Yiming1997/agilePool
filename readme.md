@@ -95,6 +95,8 @@ defer pool.Close()
 | `WithStatsWindowSize` | `10` | Number of sliding windows for median calculation. |
 | `WithScalerPeriod` | `10ms` | How often the scaler evaluates whether to spawn workers. |
 | `WithBacklogDecayFactor` | `0.3` | Weight (0–1) for backlog in the scaler target formula. Higher values make the scaler more aggressive at draining queues. |
+| `WithZeroConsumeScaleInterval` | `100ms` | Minimum interval between growth steps of the zero-consume fallback: when the pool has queued work but the measured consumption is zero (e.g. a burst of long tasks after an idle period), the scaler grows on queue depth at most once per interval. |
+| `WithMaxZeroConsumeScaleStep` | `64` | Maximum number of workers a single zero-consume growth step may add. |
 | `WithPanicHandler` | `nil` | Custom `func(task Task, recovered any, stack []byte)` invoked when a task panics, replacing the default log line. Defaults to logging with `SetLogger`. |
 
 > **Note**: `WithTaskQueueSize` controls the capacity of the internal handoff channel. Tasks beyond that capacity are stored in the dynamically growing chunked buffer.
