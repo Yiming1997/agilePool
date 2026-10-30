@@ -47,7 +47,12 @@ type Config struct {
 	statsWindowSize    int           // number of windows for median calculation
 	scalerPeriod       time.Duration // scaler tick interval (e.g. 50ms)
 	backlogDecayFactor float64       // queue backlog weight in scaler target (0-1)
-	panicHandler       PanicHandler  // custom task-panic handler (nil keeps default logging)
+	// zeroConsumeScaleInterval and maxZeroConsumeScaleStep tune the fallback the
+	// scaler uses when queued work exists but consumption is observed as zero,
+	// for example right after an idle period (see Pool.scaleIfNeeded).
+	zeroConsumeScaleInterval time.Duration
+	maxZeroConsumeScaleStep  int64
+	panicHandler             PanicHandler // custom task-panic handler (nil keeps default logging)
 }
 
 // ConfigOption mutates a Config while NewConfig is building it.
@@ -80,6 +85,9 @@ func NewConfig(opts ...ConfigOption) *Config {
 		statsWindowSize:    defaultStatsWindowSize,
 		scalerPeriod:       defaultScalerPeriod,
 		backlogDecayFactor: defaultBacklogDecayFactor,
+
+		zeroConsumeScaleInterval: defaultZeroConsumeScaleInterval,
+		maxZeroConsumeScaleStep:  defaultMaxZeroConsumeScaleStep,
 	}
 	for _, opt := range opts {
 		opt(config)
@@ -195,6 +203,31 @@ func WithBacklogDecayFactor(factor float64) ConfigOption {
 	return func(c *Config) {
 		if factor >= 0 && factor <= 1 {
 			c.backlogDecayFactor = factor
+		}
+	}
+}
+
+// WithZeroConsumeScaleInterval sets the minimum interval between two growth
+// steps of the zero-consume fallback. The fallback applies when the consume
+// median over the statistics window is zero while tasks are queued — typically
+// a burst of long-running tasks submitted after an idle period — and grows the
+// pool by one bounded step per interval instead of staying at a single worker.
+// Non-positive values are ignored.
+func WithZeroConsumeScaleInterval(d time.Duration) ConfigOption {
+	return func(c *Config) {
+		if d > 0 {
+			c.zeroConsumeScaleInterval = d
+		}
+	}
+}
+
+// WithMaxZeroConsumeScaleStep caps how many workers a single zero-consume growth
+// step may add, bounding the ramp-up of the fallback described in
+// WithZeroConsumeScaleInterval. Non-positive values are ignored.
+func WithMaxZeroConsumeScaleStep(n int64) ConfigOption {
+	return func(c *Config) {
+		if n > 0 {
+			c.maxZeroConsumeScaleStep = n
 		}
 	}
 }

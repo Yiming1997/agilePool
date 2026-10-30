@@ -23,6 +23,15 @@ const (
 	defaultScalerPeriod         = 10 * time.Millisecond
 	defaultBacklogDecayFactor   = 0.3
 
+	// defaultZeroConsumeScaleInterval rate-limits the zero-consume growth
+	// fallback in scaleIfNeeded unless Config overrides it.
+	defaultZeroConsumeScaleInterval = 100 * time.Millisecond
+
+	// defaultMaxZeroConsumeScaleStep caps how many workers one zero-consume
+	// growth step may add, so a deep backlog ramps up instead of spawning in
+	// one burst.
+	defaultMaxZeroConsumeScaleStep = int64(64)
+
 	// taskChunkSize is the number of Task slots per chunk in the linked-list
 	// buffer. Small, fixed-size chunks avoid the ~2× memory overhead of a
 	// single dynamically-growing slice and reduce GC pressure.
@@ -108,10 +117,12 @@ type Pool struct {
 	// taskBuf stores tasks in a chunked linked-list buffer when taskQueue is full.
 	taskBuf *chunkedTaskBuffer
 
-	// pendingTasks counts all submitted tasks that have not yet started
-	// processing. Unlike buf+channel occupancy, it includes submitters
-	// blocked on p.taskQueue <- task, giving the scaler full visibility
-	// into true demand regardless of buffer saturation.
+	// pendingTasks counts submitted tasks that have not completed yet: queued,
+	// executing inside a worker, or still being handed off by a submitter.
+	// Unlike buf+channel occupancy it includes submitters blocked on
+	// p.taskQueue <- task, giving the scaler full visibility into demand
+	// regardless of buffer saturation. It is therefore NOT the queue depth:
+	// use queuedTasks for the tasks that still need a worker.
 	pendingTasks int64
 
 	// ---- rate statistics for adaptive scaling ----
@@ -123,6 +134,11 @@ type Pool struct {
 	submitHist  *histogram // submit count distribution per window
 	consumeHist *histogram // consume count distribution per window
 	exitHist    *histogram // exit count distribution per window
+
+	// lastZeroConsumeScale is the timestamp of the last growth step taken by
+	// the zero-consume fallback in scaleIfNeeded; accessed only by the scaler
+	// goroutine.
+	lastZeroConsumeScale time.Time
 
 	hooks        Hooks        // lifecycle callbacks registered via SetHook
 	panicHandler PanicHandler // custom task-panic handler (nil keeps default logging)
@@ -525,6 +541,13 @@ func (p *Pool) sampleRates() {
 	p.exitHist.add(ext)
 }
 
+// queuedTasks returns the number of tasks waiting for a worker: the handoff
+// queue shards plus the chunked overflow buffer. Tasks already executing are
+// not included, unlike pendingTasks.
+func (p *Pool) queuedTasks() int64 {
+	return int64(p.GetTaskQueueLen()) + p.taskBuf.Len()
+}
+
 func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
 	running := atomic.LoadInt64(&p.runningWorkersNum)
@@ -532,8 +555,8 @@ func (p *Pool) scaleIfNeeded() {
 	bufDepth := p.taskBuf.Len()
 
 	// totalBacklog uses pendingTasks (atomic), covering all submitted
-	// tasks not yet started, including submitters blocked on the
-	// handoff channel that are invisible to bufDepth + len(taskQueue).
+	// tasks that have not completed yet, including submitters blocked on
+	// the handoff channel that are invisible to bufDepth + len(taskQueue).
 	totalBacklog := atomic.LoadInt64(&p.pendingTasks)
 
 	var target int64
@@ -548,10 +571,11 @@ func (p *Pool) scaleIfNeeded() {
 	// buffer is deep relative to the drain rate, the scaler becomes more
 	// aggressive; when it's shallow, the configured decayFactor dominates.
 	if totalBacklog > 0 {
-		if running == 0 {
+		switch {
+		case running == 0:
 			// Cold start: spawn enough to drain the backlog (up to capacity).
 			target = totalBacklog
-		} else if consumeMed > 0 {
+		case consumeMed > 0:
 			// bufPressure ∈ [0,1]: how many 100ms cycles needed to drain buf alone.
 			bufCycles := float64(bufDepth) / consumeMed
 			bufPressure := min(1.0, bufCycles*0.15)
@@ -565,7 +589,34 @@ func (p *Pool) scaleIfNeeded() {
 			if qTarget > target {
 				target = qTarget
 			}
+		default:
+			// Zero-consume fallback: while the pool idles its sliding window
+			// fills with zeros, so a one-shot burst of long-running tasks
+			// cannot raise either median. Both branches above then stay blind
+			// although work is queued, and only the single cold-start worker
+			// ever runs — the pool never grows even though capacity allows it.
+			// Fall back to the real queue depth (excluding executing tasks)
+			// and ramp up in bounded steps.
+			queued := p.queuedTasks()
+			room := p.capacity - running
+			now := time.Now()
+			if queued > 0 && room > 0 &&
+				now.Sub(p.lastZeroConsumeScale) >= p.config.zeroConsumeScaleInterval {
+				growth := min(queued, max(int64(1), running), p.config.maxZeroConsumeScaleStep, room)
+				target = running + growth
+				p.lastZeroConsumeScale = now
+			}
 		}
+	}
+
+	// A pool never needs more workers than there are pending tasks: a worker
+	// runs at most one task at a time, so any extra worker would find nothing
+	// to do and park immediately. This is also the brake on the backlog target
+	// above: qTarget scales with the current worker count, so with the default
+	// unbounded capacity a deep queue would otherwise multiply the running
+	// count on every scaler tick until it runs away.
+	if target > totalBacklog {
+		target = totalBacklog
 	}
 
 	if target > p.capacity {
