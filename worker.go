@@ -106,9 +106,9 @@ func (w *worker) nextShardTask() (Task, bool) {
 func (w *worker) runTask(task Task) {
 	atomic.AddInt64(&w.pool.consumeCount, 1)
 
-	// Balance the submit-side wg.Add exactly once per task. Registered before
-	// any hook dispatch and kept on its own defer, so a hook implementation
-	// that panics cannot skip done() and deadlock Wait()/Close().
+	// Balance the submit-side addPending exactly once per task. Registered
+	// before any hook dispatch and kept on its own defer, so a hook
+	// implementation that panics cannot skip done() and leave Wait blocked.
 	defer w.pool.done()
 
 	hookCtx := context.Background()

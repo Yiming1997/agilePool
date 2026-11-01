@@ -59,7 +59,7 @@ OnTaskStarted / OnTaskCompleted / OnPoolClosed)。本次为 test 工具新增一
    库未做任何改动。
 2. **panic 双保险成立**:callback 层(库内 `invoke` 逐个 recover)与
    dispatch 层(`Pool.dispatchHook` 整体 recover)均能保证 worker 与
-   提交路径的簿记(wg.Done)不被跳过。
+   提交路径的簿记(done)不被跳过。
 3. **跨 goroutine 顺序边界**:Enqueued 与 Started 之间无跨 goroutine 的
    happens-before 保证(worker 可能先于提交方 enqueue 回调取走任务),
    h* 断言只依赖真实的程序序保证(Submitted 首个、Started<Completed)。
