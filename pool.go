@@ -105,7 +105,16 @@ type Pool struct {
 	idleWorks         idle.IdleContainer[*worker]
 	config            *Config
 	lock              *sync.Mutex
-	wg                sync.WaitGroup
+
+	// drainMu guards drainCh, the completion signal used by Wait. It is only
+	// taken by Wait and by done on the 1→0 transition, so the per-task hot
+	// path remains a single atomic operation. Wait creates the channel when it
+	// observes a non-zero pendingTasks under drainMu, and the next done that
+	// reaches zero closes it. A channel generation is used instead of a sync.WaitGroup
+	// because it cannot panic when a rejected submission races with Wait:
+	// there is no internal zero-waiter state for Add to violate.
+	drainMu sync.Mutex
+	drainCh chan struct{} // non-nil while a Wait caller is blocked on a pending drain; guarded by drainMu
 	// logger is read by every goroutine that reports a panic (workers, the
 	// submitting goroutine, Close), so it is stored atomically: SetLogger may
 	// be called while the pool is running.
@@ -309,13 +318,11 @@ func (p *Pool) SubmitCtx(ctx context.Context, task Task) {
 }
 
 func (p *Pool) submit(ctx context.Context, task Task) bool {
-	// Increment before the closed check so the scaler cannot observe an empty
-	// pool and stop while this submission is still in flight.
-	atomic.AddInt64(&p.pendingTasks, 1)
-	p.wg.Add(1)
+	// Register the task before the closed check so the scaler cannot observe
+	// an empty pool and stop while this submission is still in flight.
+	p.addPending()
 	if atomic.LoadInt32(&p.closed) == 1 {
-		atomic.AddInt64(&p.pendingTasks, -1)
-		p.wg.Done() // Balance the Add above because the closed pool rejects this task.
+		p.done() // Balance the addPending above because the closed pool rejects this task.
 		return false
 	}
 	atomic.AddInt64(&p.submitCount, 1)
@@ -721,13 +728,48 @@ func (p *Pool) Close() {
 
 // Wait blocks until every accepted task has completed. It does not stop the
 // pool; call Close afterwards to release the background goroutines.
+//
+// Wait may be called concurrently with Submit, including a Submit that is
+// rejected because the pool is already closed; such a rejected submission is
+// still accounted for and cannot panic the waiter.
 func (p *Pool) Wait() {
-	p.wg.Wait()
+	p.drainMu.Lock()
+	// Decide from the counter, not from whether a channel exists: a submitter
+	// that has already incremented pendingTasks is pending, regardless of
+	// whether anyone has published a channel for it yet.
+	if atomic.LoadInt64(&p.pendingTasks) == 0 {
+		p.drainMu.Unlock()
+		return
+	}
+	if p.drainCh == nil {
+		p.drainCh = make(chan struct{})
+	}
+	ch := p.drainCh
+	p.drainMu.Unlock()
+	<-ch
 }
 
+// addPending registers a task in the pending count before it can be rejected
+// or executed. The drain channel is created lazily by Wait, so submission is
+// a single atomic with no lock or allocation.
+func (p *Pool) addPending() {
+	atomic.AddInt64(&p.pendingTasks, 1)
+}
+
+// done marks one task complete and wakes Wait callers when the pending count
+// reaches zero. The zero check is repeated under drainMu because a concurrent
+// addPending may have made the pool non-empty again after the decrement, and
+// a channel Wait created for that new batch must not be closed early.
 func (p *Pool) done() {
-	atomic.AddInt64(&p.pendingTasks, -1)
-	p.wg.Done()
+	if atomic.AddInt64(&p.pendingTasks, -1) != 0 {
+		return
+	}
+	p.drainMu.Lock()
+	if atomic.LoadInt64(&p.pendingTasks) == 0 && p.drainCh != nil {
+		close(p.drainCh)
+		p.drainCh = nil
+	}
+	p.drainMu.Unlock()
 }
 
 // GetRunningWorkersNum returns the number of workers currently executing
@@ -791,7 +833,7 @@ func (p *Pool) SetHook(hooks Hooks) error {
 // hooks implementation raises. hook.Hooks already recovers each registered
 // callback; this guard additionally keeps a custom implementation that panics
 // mid-dispatch from crashing the submitting goroutine, a worker, or Close,
-// and from skipping pool bookkeeping such as wg.Done.
+// and from skipping pool bookkeeping such as done().
 func (p *Pool) dispatchHook(fn func(h Hooks)) {
 	if p.hooks == nil {
 		return
