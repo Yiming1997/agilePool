@@ -284,6 +284,70 @@ pool.SetHook(h)
 - The task itself is not passed to callbacks; carry per-task data through `ctx` via `SubmitCtx`.
 - Register before the pool starts processing tasks: the hook set is read without synchronization on every dispatch. A custom implementation only needs the five methods of `agilepool.Hooks`.
 
+## Prometheus metrics
+
+The optional `metrics` package exposes ten pool statistics using Prometheus text
+format 0.0.4, with no additional dependencies or hook registration:
+
+```go
+import "github.com/Yiming1997/agilePool/v2/metrics"
+
+mux := http.NewServeMux()
+mux.Handle("/metrics", metrics.Handler(pool))
+// Or write to any io.Writer:
+// err := metrics.WriteText(w, pool)
+```
+
+Run `go run ./example/prometheus_example`, request
+`http://127.0.0.1:8080/submit`, then inspect `http://127.0.0.1:8080/metrics`.
+The example uses NONBLOCK and returns 503 for rejected tasks, 202 for accepted tasks.
+
+| Metric (default name) | Type | Meaning |
+| --- | --- | --- |
+| `agilepool_workers_running` | gauge | Workers in the run loop, including fetching tasks; excludes parked workers. |
+| `agilepool_workers_idle` | gauge | Worker structs parked for reuse. |
+| `agilepool_workers_created_total` | counter | Lifetime worker struct allocations, not goroutine starts. |
+| `agilepool_tasks_submitted_total` | counter | Lifetime accepted tasks; each retrying task counts once. |
+| `agilepool_tasks_completed_total` | counter | Accepted tasks whose worker handling finished, including recovered panics and cancellation skips; not a success count. |
+| `agilepool_tasks_rejected_total` | counter | Non-nil tasks refused before acceptance: closed pool, NONBLOCK saturation, or cancellation (including an already-cancelled `SubmitCtx`). |
+| `agilepool_tasks_queued` | gauge | Handoff shards plus overflow buffer; excludes blocked submitters and batches already fetched by workers. |
+| `agilepool_task_queue_capacity` | gauge | Configured handoff capacity; excludes overflow capacity and extra slots from shard rounding. |
+| `agilepool_worker_capacity` | gauge | Configured maximum running workers. |
+| `agilepool_tasks_pending` | gauge | Unfinished tasks, including queued, executing, prefetched, and blocked submissions. |
+
+Nil tasks are ignored. Cancellation after acceptance counts as completion, not
+rejection. Lifetime counters are separate from the scaler's resettable statistics
+and reset only when a new pool is created. Completion is recorded before `Wait`
+returns. Values are independent snapshots: a very fast worker can complete before
+its submitter records acceptance, so cross-metric equalities are only meaningful
+after submitters have returned and the pool has drained.
+
+Collection reads the overflow-buffer length under its existing mutex; it does not
+install hooks or alter scheduling. Queue occupancy is an approximate concurrent
+snapshot, not the exact number of all tasks that have yet to start.
+
+`metrics.WithNamespace("myapp")` adds a prefix, producing
+`myapp_agilepool_workers_running`; `metrics.WithSubsystem("pool")` produces
+`agilepool_pool_workers_running`. Both options can be combined. Empty values use
+the default names. Prefixes must form ASCII metric identifiers (letters,
+underscores, digits, with no leading digit). Invalid names or a nil pool return an
+error from `WriteText`, or HTTP 500 from `Handler`. Writer errors are returned.
+The handler supports GET and HEAD; other methods receive 405 with `Allow: GET, HEAD`.
+
+These are scrapeable application metrics. Kubernetes HPA integration additionally
+requires Prometheus scraping and a custom metrics adapter; exposing `/metrics`
+alone does not configure autoscaling.
+
+Validation: `go test ./metrics` covers the text and HTTP contracts. With the
+official `promtool` on PATH, `go test ./metrics -run TestPromtool -v` also parses
+and lints the output (otherwise that optional check is skipped).
+Use `go test ./metrics -run '^$' -bench BenchmarkWriteText -benchmem` to measure
+collection while idle and under concurrent submissions.
+
+Lifetime task accounting also adds atomic operations when no metrics are scraped.
+See the [throughput A/B report](docs/benchmarks/prometheus-metrics/README.md) for
+the measured cost, raw samples, and reproduction instructions.
+
 ## Benchmark
 
 A comprehensive benchmark suite comparing agilePool against other popular Go goroutine pools is available at [agilePool-benchmark](https://github.com/Yiming1997/agilePool-benchmark).

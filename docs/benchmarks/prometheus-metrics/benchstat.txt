@@ -1,0 +1,46 @@
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+                              │ baseline.txt │           candidate.txt            │
+                              │    sec/op    │   sec/op     vs base               │
+MetricsOverhead/noop             38.61n ± 2%   39.01n ± 1%  +1.02% (p=0.050 n=10)
+MetricsOverhead/noop-8           94.34n ± 5%   97.36n ± 3%  +3.20% (p=0.005 n=10)
+MetricsOverhead/noop-16          85.35n ± 2%   90.76n ± 2%  +6.33% (p=0.000 n=10)
+MetricsOverhead/cpu              2.687µ ± 1%   2.705µ ± 1%       ~ (p=0.210 n=10)
+MetricsOverhead/cpu-8            377.8n ± 0%   378.1n ± 1%       ~ (p=0.926 n=10)
+MetricsOverhead/cpu-16           216.8n ± 1%   220.2n ± 1%  +1.57% (p=0.012 n=10)
+MetricsOverhead/sleep100us       4.437µ ± 1%   4.429µ ± 0%       ~ (p=0.493 n=10)
+MetricsOverhead/sleep100us-8     4.228µ ± 0%   4.236µ ± 0%       ~ (p=0.254 n=10)
+MetricsOverhead/sleep100us-16    4.245µ ± 0%   4.229µ ± 0%  -0.38% (p=0.007 n=10)
+geomean                          560.4n        568.0n       +1.37%
+
+                              │ baseline.txt │            candidate.txt            │
+                              │     B/op     │    B/op     vs base                 │
+MetricsOverhead/noop            0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/noop-8          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/noop-16         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu             4.000 ± 0%     4.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu-8           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu-16          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us      6.000 ± 0%     6.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us-8    6.000 ± 0%     6.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us-16   6.000 ± 0%     6.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                    ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                              │ baseline.txt │            candidate.txt            │
+                              │  allocs/op   │ allocs/op   vs base                 │
+MetricsOverhead/noop            0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/noop-8          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/noop-16         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu             0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu-8           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu-16          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us-8    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us-16   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                    ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
