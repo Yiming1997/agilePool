@@ -18,7 +18,7 @@ import (
 
 // Hooks stores and dispatches lifecycle callbacks. Unlike hook.Hooks, it is
 // safe to add callbacks while events are being dispatched. It implements
-// agilepool.Hooks.
+// agilepool.Hooks and its optional rejection extension.
 type Hooks struct {
 	mu        sync.Mutex
 	snapshots atomic.Pointer[callbackSnapshot]
@@ -31,12 +31,14 @@ type Hooks struct {
 type callbackSnapshot struct {
 	taskSubmitted []agilepool.TaskHook
 	taskEnqueued  []agilepool.TaskHook
+	taskRejected  []agilepool.TaskHook
 	taskStarted   []agilepool.TaskHook
 	taskCompleted []agilepool.TaskCompleteHook
 	poolClosed    []agilepool.PoolHook
 }
 
 var _ agilepool.Hooks = (*Hooks)(nil)
+var _ agilepool.RejectedHooks = (*Hooks)(nil)
 
 // NewHooks returns an empty dynamic dispatcher that logs recovered callback
 // panics through the standard logger.
@@ -62,6 +64,17 @@ func (h *Hooks) AddTaskEnqueued(fn agilepool.TaskHook) {
 	current := h.snapshot()
 	next := *current
 	next.taskEnqueued = appendCallback(current.taskEnqueued, fn)
+	h.snapshots.Store(&next)
+	h.mu.Unlock()
+}
+
+// AddTaskRejected registers a callback for future rejection events. A task
+// rejected before acceptance produces one event; nil tasks are ignored.
+func (h *Hooks) AddTaskRejected(fn agilepool.TaskHook) {
+	h.mu.Lock()
+	current := h.snapshot()
+	next := *current
+	next.taskRejected = appendCallback(current.taskRejected, fn)
 	h.snapshots.Store(&next)
 	h.mu.Unlock()
 }
@@ -107,6 +120,14 @@ func (h *Hooks) DispatchTaskSubmitted(ctx context.Context) {
 func (h *Hooks) DispatchTaskEnqueued(ctx context.Context) {
 	for _, fn := range h.snapshot().taskEnqueued {
 		h.invoke(func() { fn(ctx) }, "OnTaskEnqueued")
+	}
+}
+
+// DispatchTaskRejected dispatches one stable snapshot of rejection callbacks.
+// It implements the optional rejection hook extension.
+func (h *Hooks) DispatchTaskRejected(ctx context.Context) {
+	for _, fn := range h.snapshot().taskRejected {
+		h.invoke(func() { fn(ctx) }, "OnTaskRejected")
 	}
 }
 

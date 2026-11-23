@@ -1,12 +1,16 @@
 # Prometheus metrics: task throughput A/B
 
+> Historical result for the unconditional-counter prototype at `005899b`.
+> Superseded by the [opt-in collector comparison](../prometheus-metrics-optin/README.md).
+> The raw measurements below are retained unchanged and do not describe the current implementation.
+
 Measured on 2026-11-22. This compares the original pool with the lifetime-counter
 implementation in this change, without scraping metrics during the run.
 
 ## Setup
 
 - Baseline: `2eaf39a8d6ebb7b69943f43931860fbafc3a726c` (upstream `main`).
-- Candidate: the feature implementation in this branch; no scheduler changes.
+- Candidate: the initial feature implementation at `005899b`; no scheduler changes.
 - Windows/amd64, AMD Ryzen 7 8845H, Go 1.26.5.
 - Identical `benchmark/metrics_overhead_benchmark_test.go` compiled in each checkout.
 - BLOCK mode, 128-worker ceiling, 4096 configured handoff slots, automatic sharding.
@@ -62,7 +66,7 @@ the table renders that as `<0.001`, not a probability of exactly zero.
 ## Reproduction
 
 Create a detached baseline worktree at the commit above and copy the benchmark
-file from this branch into its `benchmark/` directory. Build each benchmark
+file from commit `005899b` into its `benchmark/` directory. Build each benchmark
 package with `go test -c -o <output.exe> ./benchmark` using the same Go toolchain.
 For each binary, collect ten samples with these arguments:
 

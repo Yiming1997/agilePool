@@ -9,9 +9,15 @@ import (
 	agilepool "github.com/Yiming1997/agilePool/v2"
 )
 
+// The common fixture stays compatible with the original pool. A separate,
+// opt-in build-tagged file supplies collector setup for the enabled variant.
+// Setup runs before warmup and is outside the measured task-processing path.
+var metricsBenchmarkSetup func(*agilepool.Pool) error
+
 // BenchmarkMetricsOverhead uses only pre-existing APIs so the identical file
 // can be copied to a baseline checkout. Timing includes draining accepted work;
 // it measures submission-to-completion throughput without scraping metrics.
+// Build with -tags=metrics_enabled to register the optional collector callbacks.
 func BenchmarkMetricsOverhead(b *testing.B) {
 	var input [256]byte
 	for i := range input {
@@ -38,6 +44,11 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 				agilepool.WithTaskQueueSize(4096),
 			))
 			defer p.Close()
+			if metricsBenchmarkSetup != nil {
+				if err := metricsBenchmarkSetup(p); err != nil {
+					b.Fatal(err)
+				}
+			}
 			// Warm the same pool before timing to reduce cold-start influence.
 			for i := 0; i < 4096; i++ {
 				p.Submit(workload.task)

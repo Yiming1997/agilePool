@@ -1,5 +1,5 @@
 // Package metrics exposes pool statistics in Prometheus text format 0.0.4
-// without installing hooks or adding third-party dependencies.
+// using an opt-in hook collector and no third-party dependencies.
 package metrics
 
 import (
@@ -10,8 +10,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-
-	agilepool "github.com/Yiming1997/agilePool/v2"
 )
 
 type config struct {
@@ -61,23 +59,25 @@ func configure(opts []Option) (string, error) {
 
 // WriteText writes ten metrics in a fixed order, including HELP and TYPE.
 // Values are independent concurrent snapshots, not a transactional view.
-// Invalid name options or a nil pool/writer return an error before writing.
-func WriteText(w io.Writer, p *agilepool.Pool, opts ...Option) error {
+// Register the collector before submissions begin. Invalid name options or a
+// nil collector/pool/writer return an error before writing.
+func WriteText(w io.Writer, c *Collector, opts ...Option) error {
 	prefix, err := configure(opts)
 	if err != nil {
 		return err
 	}
-	return writeText(w, p, prefix)
+	return writeText(w, c, prefix)
 }
 
 func escapeHelp(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\\", "\\\\"), "\n", "\\n")
 }
 
-func writeText(w io.Writer, p *agilepool.Pool, prefix string) error {
-	if p == nil || w == nil {
-		return errors.New("metrics: pool and writer must not be nil")
+func writeText(w io.Writer, c *Collector, prefix string) error {
+	if c == nil || c.pool == nil || w == nil {
+		return errors.New("metrics: collector, pool and writer must not be nil")
 	}
+	p := c.pool
 	values := [...]struct {
 		name, kind, help string
 		value            int64
@@ -85,9 +85,9 @@ func writeText(w io.Writer, p *agilepool.Pool, prefix string) error {
 		{"workers_running", "gauge", "Workers in the run loop, excluding parked workers.", p.GetRunningWorkersNum()},
 		{"workers_idle", "gauge", "Workers parked for reuse.", p.GetIdleWorkerCount()},
 		{"workers_created_total", "counter", "Total worker structs allocated.", p.GetWorkerCreateCount()},
-		{"tasks_submitted_total", "counter", "Total tasks accepted by the pool.", p.GetSubmittedTaskCount()},
-		{"tasks_completed_total", "counter", "Total accepted tasks finished, including panics and cancellation skips.", p.GetCompletedTaskCount()},
-		{"tasks_rejected_total", "counter", "Total non-nil tasks refused before acceptance.", p.GetRejectedTaskCount()},
+		{"tasks_submitted_total", "counter", "Accepted tasks observed since collector registration.", c.GetSubmittedTaskCount()},
+		{"tasks_completed_total", "counter", "Finished tasks observed since registration, including panics and cancellation skips.", c.GetCompletedTaskCount()},
+		{"tasks_rejected_total", "counter", "Non-nil tasks refused before acceptance since collector registration.", c.GetRejectedTaskCount()},
 		{"tasks_queued", "gauge", "Tasks in handoff shards and overflow buffer, excluding worker-prefetched tasks.", p.GetQueuedTaskCount()},
 		{"task_queue_capacity", "gauge", "Configured handoff capacity, excluding overflow and shard rounding.", int64(p.GetTaskQueueCapacity())},
 		{"worker_capacity", "gauge", "Configured maximum running workers.", p.GetCapacity()},
@@ -104,9 +104,9 @@ func writeText(w io.Writer, p *agilepool.Pool, prefix string) error {
 }
 
 // Handler serves GET and HEAD with text/plain; version=0.0.4; charset=utf-8.
-// Invalid options or a nil pool produce HTTP 500. Other methods receive 405.
-// Configure once before publishing the handler; callers mount it at /metrics.
-func Handler(p *agilepool.Pool, opts ...Option) http.Handler {
+// Invalid options or a nil collector/pool produce HTTP 500. Other methods
+// receive 405. Callers register the collector and mount the handler at /metrics.
+func Handler(c *Collector, opts ...Option) http.Handler {
 	prefix, configErr := configure(opts)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -117,7 +117,7 @@ func Handler(p *agilepool.Pool, opts ...Option) http.Handler {
 		var body bytes.Buffer
 		err := configErr
 		if err == nil {
-			err = writeText(&body, p, prefix)
+			err = writeText(&body, c, prefix)
 		}
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)

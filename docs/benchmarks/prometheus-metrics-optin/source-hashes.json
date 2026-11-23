@@ -1,0 +1,38 @@
+[
+    {
+        "Path":  "pool.go",
+        "SHA256":  "C0360719BF55171F961BB2FB6926311DAF7FFCB39CCD44BA67CFC02681FD688D"
+    },
+    {
+        "Path":  "worker.go",
+        "SHA256":  "A32F9C939A1A91AE323BBE87906CE4C030B41001D86B506E654B6AC628F4F774"
+    },
+    {
+        "Path":  "hook.go",
+        "SHA256":  "990898F957DFE6641AF383A5BF3D435615F5B79875D7C4AAB7926DD9B06225E5"
+    },
+    {
+        "Path":  "hook\\hook.go",
+        "SHA256":  "0AEC389017BC7FACAF8F4367FE72DBC9F9197D966A16DF13CBFCA7DDB02414A7"
+    },
+    {
+        "Path":  "hook\\dynamic\\dynamic.go",
+        "SHA256":  "E12432DB8FDC33AB750A356A8348C960BB388B8F7D02675205BBDDC2186E9191"
+    },
+    {
+        "Path":  "metrics\\collector.go",
+        "SHA256":  "29CBE8B05A2CCDFB67EEEE3C8B699FA626B94890C6B43C40C7CFDF1A86B29ED7"
+    },
+    {
+        "Path":  "metrics\\metrics.go",
+        "SHA256":  "430D17327BE53164CAD0F536C9FEE2BED6EABC84712D4A572DCA8FB7B347080E"
+    },
+    {
+        "Path":  "benchmark\\metrics_overhead_benchmark_test.go",
+        "SHA256":  "635B197FD0EFD095ED563BD349395E4156F276F1599D7EF0DBAD9FBCD5AF4071"
+    },
+    {
+        "Path":  "benchmark\\metrics_enabled_benchmark_test.go",
+        "SHA256":  "C4AAE6E3851377361FF126AC37109CF9D41CE2BF9B063ABF0C4CFF6AE743E25B"
+    }
+]

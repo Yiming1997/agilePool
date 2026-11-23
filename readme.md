@@ -33,7 +33,7 @@
 - **Time-bounded submission** — `SubmitBefore` with a deadline window.
 - **Graceful shutdown** — `Wait` blocks until all in-flight tasks complete; `Close` stops new submissions.
 - **Custom logger** — plug any `Printf`/`Println` implementation (e.g. `zap.SugaredLogger`).
-- **Lifecycle hooks** — `hook.NewHooks()` dispatches Submitted / Enqueued / Started / Completed / PoolClosed callbacks; panicking callbacks are isolated and logged.
+- **Lifecycle hooks** — `hook.NewHooks()` dispatches Submitted / Enqueued / Started / Completed / PoolClosed callbacks, with an optional Rejected extension; panicking callbacks are isolated and logged.
 
 ## Installation
 
@@ -270,6 +270,7 @@ import (
 h := hook.NewHooks()
 h.AddTaskSubmitted(func(ctx context.Context) { /* submitted */ })
 h.AddTaskEnqueued(func(ctx context.Context)  { /* enqueued */ })
+h.AddTaskRejected(func(ctx context.Context)  { /* refused before acceptance; optional event */ })
 h.AddTaskStarted(func(ctx context.Context)   { /* started */ })
 h.AddTaskCompleted(func(ctx context.Context, recovered any) {
 	// recovered is nil on normal exit, otherwise the value passed to panic.
@@ -278,7 +279,7 @@ h.AddPoolClosed(func(p *agilepool.Pool) { /* closed */ })
 pool.SetHook(h)
 ```
 
-- Callbacks run in the goroutine that triggers the event: the submitting goroutine for `Submitted`/`Enqueued`, a worker for `Started`/`Completed`, and the `Close` caller for `PoolClosed`.
+- Callbacks run in the goroutine that triggers the event: the submitting goroutine for `Submitted`/`Enqueued`/`Rejected`, a worker for `Started`/`Completed`, and the `Close` caller for `PoolClosed`.
 - A panicking callback is recovered and logged; the remaining callbacks of that event still run.
 - `Enqueued` fires exactly once per accepted task. On the overflow-buffer path it is dispatched after the buffer lock is released, so it may be observed after `Started` (or even `Completed`); ordering between lifecycle events is not guaranteed.
 - The task itself is not passed to callbacks; carry per-task data through `ctx` via `SubmitCtx`.
@@ -287,15 +288,25 @@ pool.SetHook(h)
 ## Prometheus metrics
 
 The optional `metrics` package exposes ten pool statistics using Prometheus text
-format 0.0.4, with no additional dependencies or hook registration:
+format 0.0.4. Task counters live in an opt-in `Collector` with no additional dependencies.
+Register its callbacks alongside your own hooks before the first submission:
 
 ```go
-import "github.com/Yiming1997/agilePool/v2/metrics"
+import (
+    "github.com/Yiming1997/agilePool/v2/hook"
+    "github.com/Yiming1997/agilePool/v2/metrics"
+)
+
+collector := metrics.NewCollector(pool)
+hooks := hook.NewHooks() // hook/dynamic.NewHooks() also works.
+collector.Register(hooks)
+// Add your own callbacks to the same dispatcher.
+pool.SetHook(hooks) // Install once before submitting tasks.
 
 mux := http.NewServeMux()
-mux.Handle("/metrics", metrics.Handler(pool))
+mux.Handle("/metrics", metrics.Handler(collector))
 // Or write to any io.Writer:
-// err := metrics.WriteText(w, pool)
+// err := metrics.WriteText(w, collector)
 ```
 
 Run `go run ./example/prometheus_example`, request
@@ -307,30 +318,40 @@ The example uses NONBLOCK and returns 503 for rejected tasks, 202 for accepted t
 | `agilepool_workers_running` | gauge | Workers in the run loop, including fetching tasks; excludes parked workers. |
 | `agilepool_workers_idle` | gauge | Worker structs parked for reuse. |
 | `agilepool_workers_created_total` | counter | Lifetime worker struct allocations, not goroutine starts. |
-| `agilepool_tasks_submitted_total` | counter | Lifetime accepted tasks; each retrying task counts once. |
-| `agilepool_tasks_completed_total` | counter | Accepted tasks whose worker handling finished, including recovered panics and cancellation skips; not a success count. |
-| `agilepool_tasks_rejected_total` | counter | Non-nil tasks refused before acceptance: closed pool, NONBLOCK saturation, or cancellation (including an already-cancelled `SubmitCtx`). |
+| `agilepool_tasks_submitted_total` | counter | Accepted tasks observed since registration; each retrying task counts once. |
+| `agilepool_tasks_completed_total` | counter | Observed tasks whose worker handling finished, including recovered panics and cancellation skips; not a success count. |
+| `agilepool_tasks_rejected_total` | counter | Observed non-nil tasks refused before acceptance: closed pool, NONBLOCK saturation, or cancellation (including an already-cancelled `SubmitCtx`). |
 | `agilepool_tasks_queued` | gauge | Handoff shards plus overflow buffer; excludes blocked submitters and batches already fetched by workers. |
 | `agilepool_task_queue_capacity` | gauge | Configured handoff capacity; excludes overflow capacity and extra slots from shard rounding. |
 | `agilepool_worker_capacity` | gauge | Configured maximum running workers. |
 | `agilepool_tasks_pending` | gauge | Unfinished tasks, including queued, executing, prefetched, and blocked submissions. |
 
 Nil tasks are ignored. Cancellation after acceptance counts as completion, not
-rejection. Lifetime counters are separate from the scaler's resettable statistics
-and reset only when a new pool is created. Completion is recorded before `Wait`
-returns. Values are independent snapshots: a very fast worker can complete before
+rejection. Counters belong to the collector, are independent of the scaler's
+resettable statistics, and start at zero when a collector is created. Register
+once before the first submission for full pool-lifetime totals; an unregistered
+collector observes no task events. Do not share one collector across pools.
+`Register` supports both bundled dispatchers; custom dispatchers can call the
+collector's `OnTaskEnqueued`, `OnTaskCompleted`, and `OnTaskRejected` callbacks.
+They must implement the optional `agilepool.RejectedHooks` for exact rejection totals.
+The existing five-method `Hooks` interface remains compatible.
+
+Completion callbacks run before `Wait` returns. Rejection callbacks run after
+pending bookkeeping is balanced and before the submission method returns; join
+submitters before checking final rejection totals. Values are independent snapshots:
+a very fast worker can complete before
 its submitter records acceptance, so cross-metric equalities are only meaningful
 after submitters have returned and the pool has drained.
 
 Collection reads the overflow-buffer length under its existing mutex; it does not
-install hooks or alter scheduling. Queue occupancy is an approximate concurrent
+install or replace hooks, or alter scheduling. Queue occupancy is an approximate concurrent
 snapshot, not the exact number of all tasks that have yet to start.
 
 `metrics.WithNamespace("myapp")` adds a prefix, producing
 `myapp_agilepool_workers_running`; `metrics.WithSubsystem("pool")` produces
 `agilepool_pool_workers_running`. Both options can be combined. Empty values use
 the default names. Prefixes must form ASCII metric identifiers (letters,
-underscores, digits, with no leading digit). Invalid names or a nil pool return an
+underscores, digits, with no leading digit). Invalid names or a nil collector/pool return an
 error from `WriteText`, or HTTP 500 from `Handler`. Writer errors are returned.
 The handler supports GET and HEAD; other methods receive 405 with `Allow: GET, HEAD`.
 
@@ -344,9 +365,11 @@ and lints the output (otherwise that optional check is skipped).
 Use `go test ./metrics -run '^$' -bench BenchmarkWriteText -benchmem` to measure
 collection while idle and under concurrent submissions.
 
-Lifetime task accounting also adds atomic operations when no metrics are scraped.
-See the [throughput A/B report](docs/benchmarks/prometheus-metrics/README.md) for
-the measured cost, raw samples, and reproduction instructions.
+Without collector callbacks, accepted-task and worker execution paths perform
+no new metric increments. Rejection paths check for the optional rejection hook.
+Enabling a collector adds callback dispatch and atomic counting even when metrics
+are not scraped. See the [three-way throughput report](docs/benchmarks/prometheus-metrics-optin/README.md)
+for upstream, collector-disabled, and collector-enabled measurements.
 
 ## Benchmark
 

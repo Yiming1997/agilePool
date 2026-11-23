@@ -7,6 +7,7 @@ import (
 	"time"
 
 	agilepool "github.com/Yiming1997/agilePool/v2"
+	"github.com/Yiming1997/agilePool/v2/hook"
 	"github.com/Yiming1997/agilePool/v2/metrics"
 )
 
@@ -16,13 +17,17 @@ func main() {
 		agilepool.WithTaskQueueSize(100000),
 		agilepool.WithBlockMode(agilepool.NONBLOCK),
 	))
+	collector := metrics.NewCollector(pool)
+	hooks := hook.NewHooks()
+	collector.Register(hooks)
+	_ = pool.SetHook(hooks) // Install before the first task submission.
 	defer func() {
 		pool.Close()
 		pool.Wait()
 	}()
 
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.Handler(pool))
+	mux.Handle("/metrics", metrics.Handler(collector))
 	mux.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
 		if !pool.TrySubmit(agilepool.TaskFunc(func() error {
 			time.Sleep(10 * time.Millisecond)

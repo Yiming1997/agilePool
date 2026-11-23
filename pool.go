@@ -134,11 +134,6 @@ type Pool struct {
 	// use queuedTasks for the tasks that still need a worker.
 	pendingTasks int64
 
-	// Lifetime observability counters, independent of the resettable scaler rates.
-	metricsSubmittedTotal int64
-	metricsCompletedTotal int64
-	metricsRejectedTotal  int64
-
 	// ---- rate statistics for adaptive scaling ----
 	submitCount  int64 // atomic, tasks submitted per window
 	consumeCount int64 // atomic, tasks consumed per window
@@ -313,7 +308,9 @@ func (p *Pool) SubmitCtx(ctx context.Context, task Task) {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil {
-		atomic.AddInt64(&p.metricsRejectedTotal, 1)
+		// SubmitCtx's explicit context takes precedence over any context
+		// already carried by task; no outer contextTask is created on this path.
+		p.dispatchTaskRejectedFor(ctx, nil)
 		return
 	}
 
@@ -328,8 +325,8 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 	// an empty pool and stop while this submission is still in flight.
 	p.addPending()
 	if atomic.LoadInt32(&p.closed) == 1 {
-		atomic.AddInt64(&p.metricsRejectedTotal, 1)
 		p.done() // Balance the addPending above because the closed pool rejects this task.
+		p.dispatchTaskRejectedFor(ctx, task)
 		return false
 	}
 	atomic.AddInt64(&p.submitCount, 1)
@@ -355,8 +352,8 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 			p.dispatchTaskEnqueuedFor(task)
 			return true
 		default:
-			atomic.AddInt64(&p.metricsRejectedTotal, 1)
 			p.done()
+			p.dispatchTaskRejectedFor(ctx, task)
 			return false
 		}
 	}
@@ -380,8 +377,8 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 
 	switch result {
 	case taskBufferClosed:
-		atomic.AddInt64(&p.metricsRejectedTotal, 1)
 		p.done()
+		p.dispatchTaskRejectedFor(ctx, task)
 		return false
 	case taskBufferFull:
 		// Once both queues are saturated, do not use a bare channel send:
@@ -394,12 +391,12 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 			p.dispatchTaskEnqueuedFor(task)
 			return true
 		case <-ctx.Done():
-			atomic.AddInt64(&p.metricsRejectedTotal, 1)
 			p.done()
+			p.dispatchTaskRejectedFor(ctx, task)
 			return false
 		case <-p.closePoolCn:
-			atomic.AddInt64(&p.metricsRejectedTotal, 1)
 			p.done()
+			p.dispatchTaskRejectedFor(ctx, task)
 			return false
 		}
 	default:
@@ -416,16 +413,31 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 }
 
 func (p *Pool) dispatchTaskEnqueuedFor(task Task) {
-	// Every accepted submission reaches this helper exactly once. A worker
-	// may finish before the submitter gets here, so concurrent snapshots do
-	// not guarantee completed <= submitted until submissions have returned.
-	atomic.AddInt64(&p.metricsSubmittedTotal, 1)
 	ctx := context.Background()
 	if wrapped, ok := task.(*contextTask); ok {
 		ctx = wrapped.ctx
 	}
 	p.dispatchHook(func(h Hooks) {
 		h.DispatchTaskEnqueued(ctx)
+	})
+}
+
+// dispatchTaskRejectedFor runs after admission bookkeeping has been balanced,
+// so a rejected callback cannot strand this submission in Wait. Existing hook
+// implementations need not implement the optional rejection event.
+func (p *Pool) dispatchTaskRejectedFor(ctx context.Context, task Task) {
+	if p.hooks == nil {
+		return
+	}
+	rejected, ok := p.hooks.(RejectedHooks)
+	if !ok {
+		return
+	}
+	if wrapped, ok := task.(*contextTask); ok {
+		ctx = wrapped.ctx
+	}
+	p.dispatchHook(func(Hooks) {
+		rejected.DispatchTaskRejected(ctx)
 	})
 }
 
@@ -811,26 +823,6 @@ func (p *Pool) GetPendingTaskCount() int64 {
 // mutex; the shard and buffer readings are not one atomic snapshot.
 func (p *Pool) GetQueuedTaskCount() int64 {
 	return p.queuedTasks()
-}
-
-// GetSubmittedTaskCount returns lifetime accepted submissions. Nil tasks
-// are ignored. Retries within a task do not count as additional submissions.
-func (p *Pool) GetSubmittedTaskCount() int64 {
-	return atomic.LoadInt64(&p.metricsSubmittedTotal)
-}
-
-// GetCompletedTaskCount returns lifetime accepted tasks whose worker handling
-// has finished, including recovered panics and tasks skipped after cancellation.
-// It measures completion, not business success, and is updated before Wait wakes.
-func (p *Pool) GetCompletedTaskCount() int64 {
-	return atomic.LoadInt64(&p.metricsCompletedTotal)
-}
-
-// GetRejectedTaskCount returns lifetime non-nil submissions refused because
-// of shutdown, NONBLOCK saturation or cancellation before acceptance.
-// Cancellation after acceptance is counted as completion, not rejection.
-func (p *Pool) GetRejectedTaskCount() int64 {
-	return atomic.LoadInt64(&p.metricsRejectedTotal)
 }
 
 // GetTaskQueueLen returns the number of tasks currently queued in the

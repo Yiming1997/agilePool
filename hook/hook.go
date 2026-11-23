@@ -7,7 +7,7 @@
 //	pool.SetHook(h)
 //
 // Every callback runs in the goroutine that triggers the event: the
-// submitting goroutine for Submitted/Enqueued, a worker for Started/
+// submitting goroutine for Submitted/Enqueued/Rejected, a worker for Started/
 // Completed, and the Close caller for PoolClosed. A panicking callback is
 // recovered and logged, and does not affect the remaining callbacks of the
 // same event.
@@ -22,16 +22,19 @@ import (
 )
 
 // Hooks stores and dispatches lifecycle callbacks. It implements the
-// agilepool.Hooks interface.
+// agilepool.Hooks interface and its optional rejection extension.
 type Hooks struct {
 	mu            sync.RWMutex
 	taskSubmitted []agilepool.TaskHook
 	taskEnqueued  []agilepool.TaskHook
+	taskRejected  []agilepool.TaskHook
 	taskStarted   []agilepool.TaskHook
 	taskCompleted []agilepool.TaskCompleteHook
 	poolClosed    []agilepool.PoolHook
 	logger        log.Logger
 }
+
+var _ agilepool.RejectedHooks = (*Hooks)(nil)
 
 // NewHooks returns an empty dispatcher that logs recovered callback panics
 // through the standard logger.
@@ -52,6 +55,14 @@ func (h *Hooks) AddTaskSubmitted(fn agilepool.TaskHook) {
 func (h *Hooks) AddTaskEnqueued(fn agilepool.TaskHook) {
 	h.mu.Lock()
 	h.taskEnqueued = append(h.taskEnqueued, fn)
+	h.mu.Unlock()
+}
+
+// AddTaskRejected registers a callback for a non-nil task refused before
+// acceptance. Like the other callbacks, register it before submitting tasks.
+func (h *Hooks) AddTaskRejected(fn agilepool.TaskHook) {
+	h.mu.Lock()
+	h.taskRejected = append(h.taskRejected, fn)
 	h.mu.Unlock()
 }
 
@@ -90,6 +101,14 @@ func (h *Hooks) DispatchTaskSubmitted(ctx context.Context) {
 func (h *Hooks) DispatchTaskEnqueued(ctx context.Context) {
 	for _, fn := range h.taskEnqueued {
 		h.invoke(func() { fn(ctx) }, "OnTaskEnqueued")
+	}
+}
+
+// DispatchTaskRejected implements the optional rejection hook extension.
+// It must only be called by the pool rejection path.
+func (h *Hooks) DispatchTaskRejected(ctx context.Context) {
+	for _, fn := range h.taskRejected {
+		h.invoke(func() { fn(ctx) }, "OnTaskRejected")
 	}
 }
 

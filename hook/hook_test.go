@@ -20,9 +20,10 @@ func newTestHooks() *Hooks {
 func TestNewHooksDispatchesAllEvents(t *testing.T) {
 	h := newTestHooks()
 
-	var submitted, enqueued, started, completed, closed atomic.Int64
+	var submitted, enqueued, rejected, started, completed, closed atomic.Int64
 	h.AddTaskSubmitted(func(context.Context) { submitted.Add(1) })
 	h.AddTaskEnqueued(func(context.Context) { enqueued.Add(1) })
+	h.AddTaskRejected(func(context.Context) { rejected.Add(1) })
 	h.AddTaskStarted(func(context.Context) { started.Add(1) })
 	h.AddTaskCompleted(func(context.Context, any) { completed.Add(1) })
 	h.AddPoolClosed(func(*agilepool.Pool) { closed.Add(1) })
@@ -33,6 +34,7 @@ func TestNewHooksDispatchesAllEvents(t *testing.T) {
 	ctx := context.Background()
 	h.DispatchTaskSubmitted(ctx)
 	h.DispatchTaskEnqueued(ctx)
+	h.DispatchTaskRejected(ctx)
 	h.DispatchTaskStarted(ctx)
 	h.DispatchTaskCompleted(ctx, nil)
 	h.DispatchPoolClosed(pool)
@@ -42,6 +44,9 @@ func TestNewHooksDispatchesAllEvents(t *testing.T) {
 	}
 	if got := enqueued.Load(); got != 1 {
 		t.Fatalf("enqueued callbacks = %d, want 1", got)
+	}
+	if got := rejected.Load(); got != 1 {
+		t.Fatalf("rejected callbacks = %d, want 1", got)
 	}
 	if got := started.Load(); got != 1 {
 		t.Fatalf("started callbacks = %d, want 1", got)
@@ -64,6 +69,8 @@ func TestCallbackPanicsAreIsolatedPerEvent(t *testing.T) {
 	h.AddTaskSubmitted(func(context.Context) { calls.Add(1) })
 	h.AddTaskEnqueued(func(context.Context) { boom() })
 	h.AddTaskEnqueued(func(context.Context) { calls.Add(1) })
+	h.AddTaskRejected(func(context.Context) { boom() })
+	h.AddTaskRejected(func(context.Context) { calls.Add(1) })
 	h.AddTaskStarted(func(context.Context) { boom() })
 	h.AddTaskStarted(func(context.Context) { calls.Add(1) })
 	h.AddTaskCompleted(func(context.Context, any) { boom() })
@@ -77,12 +84,41 @@ func TestCallbackPanicsAreIsolatedPerEvent(t *testing.T) {
 	ctx := context.Background()
 	h.DispatchTaskSubmitted(ctx)
 	h.DispatchTaskEnqueued(ctx)
+	h.DispatchTaskRejected(ctx)
 	h.DispatchTaskStarted(ctx)
 	h.DispatchTaskCompleted(ctx, nil)
 	h.DispatchPoolClosed(pool)
 
-	if got := calls.Load(); got != 5 {
-		t.Fatalf("surviving callbacks = %d, want 5", got)
+	if got := calls.Load(); got != 6 {
+		t.Fatalf("surviving callbacks = %d, want 6", got)
+	}
+}
+
+func TestRejectionHooksReceiveContextThroughPool(t *testing.T) {
+	h := newTestHooks()
+	contexts := make(chan context.Context, 2)
+	h.AddTaskRejected(func(ctx context.Context) { contexts <- ctx })
+	pool := agilepool.NewPool(nil)
+	if err := pool.SetHook(h); err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey{}, "rejected"))
+	cancel()
+	task := agilepool.NewTask(func() error { t.Error("rejected task executed"); return nil })
+	pool.SubmitCtx(ctx, task)
+	pool.Close()
+	pool.Submit(agilepool.UpdateTask(ctx, task))
+	pool.Submit(nil)
+	pool.Wait()
+	if len(contexts) != 2 {
+		t.Fatalf("rejection events = %d, want 2", len(contexts))
+	}
+	for i := 0; i < 2; i++ {
+		got := <-contexts
+		if got != ctx || got.Value(ctxKey{}) != "rejected" {
+			t.Fatal("rejection event lost task context")
+		}
 	}
 }
 
