@@ -194,15 +194,24 @@ pool := agilepool.NewPool(agilepool.NewConfig(
 
 The scaler is the core mechanism that keeps the worker count aligned with the submission rate. It runs **every `scalerPeriod`** (default 10 ms) and uses a three-step pipeline:
 
-**1. Rate sampling** — Every `statsSamplePeriod` (100 ms), the `statsSampler` atomically swaps and resets three counters — `submitCount`, `consumeCount`, and `exitCount` — and records them into sliding-window **histograms**.
+**1. Rate sampling** — Every `statsSamplePeriod` (100 ms), the `statsSampler` atomically swaps and resets three counters — `submitCount`, `consumeCount`, and `exitCount` — and records them into sliding-window **histograms**. It also samples the running worker count into an exact-value window.
 
-**2. Median extraction** — Each histogram retains the last `statsWindowSize` (10) samples in a fixed-bucket ring buffer. `getMedianRates()` returns the **approximate median** submit / consume / exit rate, which is far more resilient to short spikes than an average.
+**2. Median extraction** — Each histogram retains the last `statsWindowSize` (10) samples in a fixed-bucket ring buffer. `getMedianRates()` returns the **approximate median** submit / consume / exit rate, which is far more resilient to short spikes than an average. `getRunningAverage()` returns the **mean running worker count** over the same window.
 
 **3. Scaling decision** — `scaleIfNeeded()` computes the target worker count:
 
 ```
-target = submitMed × running / consumeMed          (Little's Law)
+target = submitMed × runningAvg / consumeMed          (Little's Law)
 ```
+
+`runningAvg` is the **windowed average** concurrency, not the live worker count. That distinction matters: the implied service time (`runningAvg / consumeMed`) is a property of the observed window, so a scale-up cannot raise the pool's own target. With the live count the target was proportional to the current worker size, which let one burst multiply the pool on every scaler tick until the backlog brake stopped it.
+
+| | live `running` | windowed `runningAvg` |
+| --- | --- | --- |
+| Target after a scale-up | rises again next tick | unchanged within the window |
+| Burst peak goroutines (20k tasks/s, 1 ms) | ~438 | ~52 |
+
+Because the target can only move once per statistics window, a burst ramps up one window more slowly than before. Lower `statsSamplePeriod` to shorten that step if you need a faster ramp and can afford the extra sampling cost.
 
 When a backlog exists (tasks in the channel + chunked buffer), the scaler becomes more aggressive using a **dynamic decay factor**:
 
