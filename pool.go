@@ -143,6 +143,10 @@ type Pool struct {
 	submitWindow *medianWindow // submit count per window
 	consumeWin   *medianWindow // consume count per window
 	exitWindow   *medianWindow // exit count per window
+	// runningWindow keeps the running worker count sampled once per stats
+	// window. The scaler reads its mean instead of the instantaneous count so
+	// that scaling up does not immediately raise the pool's own target.
+	runningWindow *int64Window
 
 	// lastZeroConsumeScale is the timestamp of the last growth step taken by
 	// the zero-consume fallback in scaleIfNeeded; accessed only by the scaler
@@ -209,6 +213,7 @@ func NewPool(c *Config) *Pool {
 	p.submitWindow = newMedianWindow(c.statsWindowSize)
 	p.consumeWin = newMedianWindow(c.statsWindowSize)
 	p.exitWindow = newMedianWindow(c.statsWindowSize)
+	p.runningWindow = newInt64Window(c.statsWindowSize)
 
 	p.workerPool.New = func() interface{} {
 		atomic.AddInt64(&p.workerCreateCount, 1)
@@ -573,6 +578,10 @@ func (p *Pool) sampleRates() {
 	p.submitWindow.add(sub)
 	p.consumeWin.add(con)
 	p.exitWindow.add(ext)
+	// Sample the running worker count in the same window as the rates, so the
+	// scaler reasons about one consistent snapshot of (arrivals, departures,
+	// concurrency) instead of mixing a windowed rate with a live counter.
+	p.runningWindow.add(atomic.LoadInt64(&p.runningWorkersNum))
 }
 
 // queuedTasks returns the number of tasks waiting for a worker: the handoff
@@ -595,9 +604,19 @@ func (p *Pool) scaleIfNeeded() {
 
 	var target int64
 
-	// Rate-based target: target = b / a = submitMed * running / consumeMed
-	if running > 0 && consumeMed > 0 && submitMed > 0 {
-		target = int64(submitMed * float64(running) / consumeMed)
+	// runningAvg is the mean running worker count over the same statistics
+	// window as submitMed and consumeMed. Using the windowed average instead
+	// of the live counter keeps the target from feeding back on itself: a
+	// scale-up changes `running` immediately, but the windowed snapshot stays
+	// fixed until the next sample, so the target cannot compound within one
+	// stale window.
+	runningAvg := p.getRunningAverage()
+
+	// Rate-based target: target = b / a = submitMed * runningAvg / consumeMed.
+	// The implied service time (runningAvg / consumeMed) is a property of the
+	// observed window, not of the pool's current size.
+	if runningAvg > 0 && consumeMed > 0 && submitMed > 0 {
+		target = int64(submitMed * runningAvg / consumeMed)
 	}
 
 	// Backlog-weighted target: treat backlog as additional incoming tasks.
@@ -619,7 +638,7 @@ func (p *Pool) scaleIfNeeded() {
 				(1-p.config.backlogDecayFactor)*bufPressure
 
 			effectiveSubmit := submitMed + float64(totalBacklog)*dynamicDecay
-			qTarget := int64(effectiveSubmit * float64(running) / consumeMed)
+			qTarget := int64(effectiveSubmit * runningAvg / consumeMed)
 			if qTarget > target {
 				target = qTarget
 			}
@@ -713,6 +732,17 @@ func (p *Pool) getMedianRates() (submitMed, consumeMed, exitMed float64) {
 	p.statMu.Lock()
 	defer p.statMu.Unlock()
 	return p.submitWindow.median(), p.consumeWin.median(), p.exitWindow.median()
+}
+
+// getRunningAverage returns the mean running worker count over the statistics
+// window. It is sampled once per stats window, so it trails the live counter
+// by up to statsWindowSize windows; that lag is the point: the scaler decides
+// how many workers to run from a snapshot that its own recent scaling actions
+// cannot change.
+func (p *Pool) getRunningAverage() float64 {
+	p.statMu.Lock()
+	defer p.statMu.Unlock()
+	return p.runningWindow.mean()
 }
 
 // scaler periodically checks whether the pool needs more goroutines to keep up
