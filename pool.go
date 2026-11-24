@@ -32,13 +32,6 @@ const (
 	// one burst.
 	defaultMaxZeroConsumeScaleStep = int64(64)
 
-	// defaultDrainHorizon is the default time the scaler aims to spend
-	// clearing the current backlog. With a 30ms horizon a pool that measured a
-	// 1ms service time needs 40 000 * 1ms / 30ms = 1333 workers to finish
-	// 40 000 queued tasks, while a pool that measured a 10us service time
-	// needs only 13.
-	defaultDrainHorizon = 30 * time.Millisecond
-
 	// taskChunkSize is the number of Task slots per chunk in the linked-list
 	// buffer. Small, fixed-size chunks avoid the ~2× memory overhead of a
 	// single dynamically-growing slice and reduce GC pressure.
