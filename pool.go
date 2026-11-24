@@ -139,10 +139,10 @@ type Pool struct {
 	consumeCount int64 // atomic, tasks consumed per window
 	exitCount    int64 // atomic, goroutines exited per window
 
-	statMu      sync.Mutex
-	submitHist  *histogram // submit count distribution per window
-	consumeHist *histogram // consume count distribution per window
-	exitHist    *histogram // exit count distribution per window
+	statMu       sync.Mutex
+	submitWindow *medianWindow // submit count per window
+	consumeWin   *medianWindow // consume count per window
+	exitWindow   *medianWindow // exit count per window
 
 	// lastZeroConsumeScale is the timestamp of the last growth step taken by
 	// the zero-consume fallback in scaleIfNeeded; accessed only by the scaler
@@ -206,9 +206,9 @@ func NewPool(c *Config) *Pool {
 
 	atomic.StoreInt64(&p.workerCreateCount, 0)
 
-	p.submitHist = newHistogram(submitBuckets, c.statsWindowSize)
-	p.consumeHist = newHistogram(consumeBuckets, c.statsWindowSize)
-	p.exitHist = newHistogram(exitBuckets, c.statsWindowSize)
+	p.submitWindow = newMedianWindow(c.statsWindowSize)
+	p.consumeWin = newMedianWindow(c.statsWindowSize)
+	p.exitWindow = newMedianWindow(c.statsWindowSize)
 
 	p.workerPool.New = func() interface{} {
 		atomic.AddInt64(&p.workerCreateCount, 1)
@@ -570,9 +570,9 @@ func (p *Pool) sampleRates() {
 	p.statMu.Lock()
 	defer p.statMu.Unlock()
 
-	p.submitHist.add(sub)
-	p.consumeHist.add(con)
-	p.exitHist.add(ext)
+	p.submitWindow.add(sub)
+	p.consumeWin.add(con)
+	p.exitWindow.add(ext)
 }
 
 // queuedTasks returns the number of tasks waiting for a worker: the handoff
@@ -706,12 +706,13 @@ func (p *Pool) scaleIfNeeded() {
 	p.muIdle.Unlock()
 }
 
-// getMedianRates returns the median value of each counters from the histogram
-// (per-statsSamplePeriod). Returns (submitMed, consumeMed, exitMed).
+// getMedianRates returns the median value of each counters over the last
+// statsWindowSize windows (one sample per statsSamplePeriod).
+// Returns (submitMed, consumeMed, exitMed).
 func (p *Pool) getMedianRates() (submitMed, consumeMed, exitMed float64) {
 	p.statMu.Lock()
 	defer p.statMu.Unlock()
-	return p.submitHist.median(), p.consumeHist.median(), p.exitHist.median()
+	return p.submitWindow.median(), p.consumeWin.median(), p.exitWindow.median()
 }
 
 // scaler periodically checks whether the pool needs more goroutines to keep up

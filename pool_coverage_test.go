@@ -430,43 +430,53 @@ func TestNewTaskAndNewWorker(t *testing.T) {
 	}
 }
 
-func TestHistogramBucketsAndMedian(t *testing.T) {
-	h := newHistogram([]bucketDef{
-		{low: 0, high: 0},
-		{low: 1, high: -1},
-	}, 2)
+func TestMedianWindowKeepsExactSamples(t *testing.T) {
+	w := newMedianWindow(3)
 
-	if got := h.median(); got != 0 {
-		t.Fatalf("empty histogram median = %v, want 0", got)
+	if got := w.median(); got != 0 {
+		t.Fatalf("empty window median = %v, want 0", got)
 	}
 
-	h.add(0)
-	h.add(5)
-	if got := h.median(); got != 1 {
-		t.Fatalf("median = %v, want 1 (bottom of open-ended bucket)", got)
-	}
-	if h.total != 2 {
-		t.Fatalf("total = %d, want 2", h.total)
+	w.add(10)
+	w.add(20)
+	if got := w.median(); got != 20 {
+		t.Fatalf("median = %v, want 20 (upper middle of two samples)", got)
 	}
 
-	// Adding a third sample evicts the oldest one once the ring wrapped.
-	h.add(9)
-	if h.total != 2 {
-		t.Fatalf("total after eviction = %d, want 2", h.total)
-	}
-	if h.counts[0] != 0 {
-		t.Fatalf("bucket 0 count = %d, want 0 after eviction", h.counts[0])
-	}
-	if h.counts[1] != 2 {
-		t.Fatalf("bucket 1 count = %d, want 2", h.counts[1])
+	w.add(30)
+	if got := w.median(); got != 20 {
+		t.Fatalf("median = %v, want 20", got)
 	}
 
-	negative := newHistogram([]bucketDef{{low: 0, high: 10}}, 2)
-	if got := negative.bucketIndex(-1); got != 0 {
-		t.Fatalf("bucketIndex(-1) = %d, want fallback bucket 0", got)
+	// The window is full: the next sample evicts the oldest one.
+	w.add(60)
+	if got := w.median(); got != 30 {
+		t.Fatalf("median after eviction = %v, want 30", got)
 	}
-	negative.add(5)
-	if got := negative.median(); got != 5 {
-		t.Fatalf("median for midpoint bucket = %v, want 5", got)
+	if w.count != 3 {
+		t.Fatalf("count = %d, want 3", w.count)
+	}
+}
+
+func TestMedianWindowReportsExactLargeValues(t *testing.T) {
+	// The bucketed histogram reported 10001 for every rate above 10000, which
+	// is what made the scaler overshoot on burst traffic.
+	w := newMedianWindow(2)
+	w.add(40000)
+	w.add(40000)
+	if got := w.median(); got != 40000 {
+		t.Fatalf("median = %v, want the exact value 40000", got)
+	}
+}
+
+func TestMedianWindowZeroSize(t *testing.T) {
+	w := newMedianWindow(0)
+	w.add(7)
+	if got := w.median(); got != 7 {
+		t.Fatalf("median = %v, want 7", got)
+	}
+	w.add(9)
+	if got := w.median(); got != 9 {
+		t.Fatalf("median = %v, want 9", got)
 	}
 }
