@@ -122,6 +122,10 @@ func (w *worker) runTask(task Task) {
 	// of what the hooks or handler do.
 	var recovered any
 	defer func() {
+		// Count the task as finished before the panic is handled: the scaler
+		// measures the service time from the completions, and a task that
+		// panicked did finish.
+		atomic.AddInt64(&w.pool.doneCount, 1)
 		if p := recover(); p != nil {
 			recovered = p
 			w.pool.handlePanic(task, p, Stack(1))

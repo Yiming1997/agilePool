@@ -32,6 +32,13 @@ const (
 	// one burst.
 	defaultMaxZeroConsumeScaleStep = int64(64)
 
+	// defaultDrainHorizon is the default time the scaler aims to spend
+	// clearing the current backlog. With a 30ms horizon a pool that measured a
+	// 1ms service time needs 40 000 * 1ms / 30ms = 1333 workers to finish
+	// 40 000 queued tasks, while a pool that measured a 10us service time
+	// needs only 13.
+	defaultDrainHorizon = 30 * time.Millisecond
+
 	// taskChunkSize is the number of Task slots per chunk in the linked-list
 	// buffer. Small, fixed-size chunks avoid the ~2× memory overhead of a
 	// single dynamically-growing slice and reduce GC pressure.
@@ -136,8 +143,16 @@ type Pool struct {
 
 	// ---- rate statistics for adaptive scaling ----
 	submitCount  int64 // atomic, tasks submitted per window
-	consumeCount int64 // atomic, tasks consumed per window
+	consumeCount int64 // atomic, tasks picked up by a worker per window
 	exitCount    int64 // atomic, goroutines exited per window
+	// doneCount is the monotonic number of tasks that finished. The scaler
+	// uses it to measure how long a task takes: a task that was picked up but
+	// has not returned yet says nothing about the service time.
+	doneCount int64
+
+	// lastSampleConsume is the consumeCount value at the last statistics
+	// sample. Only the stats sampler touches it.
+	lastSampleConsume int64
 
 	statMu       sync.Mutex
 	submitWindow *medianWindow // submit count per window
@@ -147,6 +162,13 @@ type Pool struct {
 	// window. The scaler reads its mean instead of the instantaneous count so
 	// that scaling up does not immediately raise the pool's own target.
 	runningWindow *int64Window
+
+	// Tick-level state of the scaler goroutine: the doneCount value and the
+	// time at the previous tick. They give the completion rate of a single
+	// tick, which is what the backlog-driven ramp-up target uses to learn how
+	// long a task takes without waiting for a whole statistics window.
+	lastTickDone int64
+	lastTickAt   time.Time
 
 	// lastZeroConsumeScale is the timestamp of the last growth step taken by
 	// the zero-consume fallback in scaleIfNeeded; accessed only by the scaler
@@ -569,8 +591,14 @@ func (p *Pool) statsSampler() {
 
 func (p *Pool) sampleRates() {
 	sub := atomic.SwapInt64(&p.submitCount, 0)
-	con := atomic.SwapInt64(&p.consumeCount, 0)
 	ext := atomic.SwapInt64(&p.exitCount, 0)
+
+	// consumeCount is a monotonic total: the scaler reads it as well, to
+	// measure the completion rate of a single tick, so it must not be reset
+	// here. Each reader keeps its own baseline instead.
+	cur := atomic.LoadInt64(&p.consumeCount)
+	con := cur - p.lastSampleConsume
+	p.lastSampleConsume = cur
 
 	p.statMu.Lock()
 	defer p.statMu.Unlock()
@@ -594,6 +622,16 @@ func (p *Pool) queuedTasks() int64 {
 func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
 	running := atomic.LoadInt64(&p.runningWorkersNum)
+
+	// serviceTime is how long one worker needs for one task, measured from
+	// the completions of the previous scaler tick. It is a property of the
+	// workload, not of the queue depth: a pool serving slow tasks needs many
+	// workers to drain a queue, a pool serving fast tasks needs few.
+	//
+	// The measurement is only trusted while the scaler runs on schedule. A
+	// long gap means the tick covered a period that is not representative of
+	// the current load, and the drain target is skipped instead.
+	serviceTime := p.measureServiceTime(running)
 
 	bufDepth := p.taskBuf.Len()
 
@@ -662,6 +700,34 @@ func (p *Pool) scaleIfNeeded() {
 		}
 	}
 
+	// Backlog-driven ramp-up target.
+	//
+	// The rate target above only moves once per statistics window, so a cold
+	// pool that receives a burst stays at one worker for a whole window and
+	// then grows one bounded step per window. Under IO workloads the burst is
+	// over before the target reacts and the throughput is lost.
+	//
+	// The target below is the number of workers that can finish the queued
+	// work within the drain horizon:
+	//
+	//	drainTarget = ceil(queuedTasks * serviceTime / drainHorizon)
+	//
+	// It contains no worker count, so it cannot feed back on the pool's own
+	// scaling decision, and it shrinks with the queue, so it cannot run away.
+	// Because it is derived from the measured service time, a pool serving
+	// fast tasks keeps a small pool while a pool serving slow tasks opens a
+	// large one for the same queue depth.
+	if p.config.drainHorizon > 0 && serviceTime > 0 {
+		queued := p.queuedTasks()
+		if queued > 0 {
+			need := float64(queued) * float64(serviceTime) / float64(p.config.drainHorizon)
+			drainTarget := int64(math.Ceil(need))
+			if drainTarget > target {
+				target = drainTarget
+			}
+		}
+	}
+
 	// A pool never needs more workers than there are pending tasks: a worker
 	// runs at most one task at a time, so any extra worker would find nothing
 	// to do and park immediately. This is also the brake on the backlog target
@@ -723,6 +789,34 @@ func (p *Pool) scaleIfNeeded() {
 		p.muIdle.Lock()
 	}
 	p.muIdle.Unlock()
+}
+
+// measureServiceTime returns how long one worker needs for one task, based on
+// the completions of the previous scaler tick.
+//
+// It is called only by the scaler goroutine, which owns the tick state.
+// The measurement is skipped when the scaler has fallen behind schedule: the
+// tick then covers a period that is not representative of the current load,
+// and a zero result disables the backlog-driven target instead of sizing it
+// from a stale rate.
+func (p *Pool) measureServiceTime(running int64) time.Duration {
+	now := time.Now()
+	cur := atomic.LoadInt64(&p.doneCount)
+	done := cur - p.lastTickDone
+	elapsed := now.Sub(p.lastTickAt)
+	p.lastTickDone = cur
+	p.lastTickAt = now
+
+	if done <= 0 || running <= 0 || elapsed <= 0 {
+		return 0
+	}
+	if elapsed > 10*p.config.scalerPeriod {
+		return 0
+	}
+	// done tasks were completed by `running` workers in `elapsed`, so one
+	// worker completes one task every elapsed/(done/running).
+	perWorker := float64(elapsed) * float64(running) / float64(done)
+	return time.Duration(perWorker)
 }
 
 // getMedianRates returns the median value of each counters over the last

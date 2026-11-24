@@ -52,6 +52,11 @@ type Config struct {
 	// for example right after an idle period (see Pool.scaleIfNeeded).
 	zeroConsumeScaleInterval time.Duration
 	maxZeroConsumeScaleStep  int64
+	// drainHorizon is the time the scaler aims to spend clearing the current
+	// backlog. The backlog-driven ramp-up target is
+	// ceil(queuedTasks * serviceTime / drainHorizon): the number of workers
+	// that can finish the queued work within the horizon.
+	drainHorizon             time.Duration
 	panicHandler             PanicHandler // custom task-panic handler (nil keeps default logging)
 }
 
@@ -88,6 +93,7 @@ func NewConfig(opts ...ConfigOption) *Config {
 
 		zeroConsumeScaleInterval: defaultZeroConsumeScaleInterval,
 		maxZeroConsumeScaleStep:  defaultMaxZeroConsumeScaleStep,
+		drainHorizon:              defaultDrainHorizon,
 	}
 	for _, opt := range opts {
 		opt(config)
