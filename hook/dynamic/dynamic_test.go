@@ -16,9 +16,10 @@ func TestHooksDispatchesAllEvents(t *testing.T) {
 	hooks := NewHooks()
 	hooks.logger = *log.New(io.Discard, "", 0)
 
-	var submitted, enqueued, started, completed, closed atomic.Int64
+	var submitted, enqueued, rejected, started, completed, closed atomic.Int64
 	hooks.AddTaskSubmitted(func(context.Context) { submitted.Add(1) })
 	hooks.AddTaskEnqueued(func(context.Context) { enqueued.Add(1) })
+	hooks.AddTaskRejected(func(context.Context) { rejected.Add(1) })
 	hooks.AddTaskStarted(func(context.Context) { started.Add(1) })
 	hooks.AddTaskCompleted(func(context.Context, any) { completed.Add(1) })
 	hooks.AddPoolClosed(func(*agilepool.Pool) { closed.Add(1) })
@@ -28,6 +29,7 @@ func TestHooksDispatchesAllEvents(t *testing.T) {
 
 	hooks.DispatchTaskSubmitted(context.Background())
 	hooks.DispatchTaskEnqueued(context.Background())
+	hooks.DispatchTaskRejected(context.Background())
 	hooks.DispatchTaskStarted(context.Background())
 	hooks.DispatchTaskCompleted(context.Background(), nil)
 	hooks.DispatchPoolClosed(pool)
@@ -37,6 +39,9 @@ func TestHooksDispatchesAllEvents(t *testing.T) {
 	}
 	if got := enqueued.Load(); got != 1 {
 		t.Fatalf("enqueued callbacks = %d, want 1", got)
+	}
+	if got := rejected.Load(); got != 1 {
+		t.Fatalf("rejected callbacks = %d, want 1", got)
 	}
 	if got := started.Load(); got != 1 {
 		t.Fatalf("started callbacks = %d, want 1", got)
@@ -85,10 +90,53 @@ func TestHooksCallbackPanicDoesNotStopRemainingCallbacks(t *testing.T) {
 	var calls atomic.Int64
 	hooks.AddTaskCompleted(func(context.Context, any) { panic("boom") })
 	hooks.AddTaskCompleted(func(context.Context, any) { calls.Add(1) })
+	hooks.AddTaskRejected(func(context.Context) { panic("boom") })
+	hooks.AddTaskRejected(func(context.Context) { calls.Add(1) })
 
 	hooks.DispatchTaskCompleted(context.Background(), nil)
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("remaining callbacks = %d, want 1", got)
+	hooks.DispatchTaskRejected(context.Background())
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("remaining callbacks = %d, want 2", got)
+	}
+}
+
+func TestRejectionRegistrationDuringDispatchAppliesToNextEvent(t *testing.T) {
+	hooks := NewHooks()
+	var initial, added atomic.Int64
+	hooks.AddTaskRejected(func(context.Context) {
+		initial.Add(1)
+		hooks.AddTaskRejected(func(context.Context) { added.Add(1) })
+	})
+	hooks.DispatchTaskRejected(context.Background())
+	if initial.Load() != 1 || added.Load() != 0 {
+		t.Fatalf("first rejection callbacks = %d/%d, want 1/0", initial.Load(), added.Load())
+	}
+	hooks.DispatchTaskRejected(context.Background())
+	if initial.Load() != 2 || added.Load() != 1 {
+		t.Fatalf("second rejection callbacks = %d/%d, want 2/1", initial.Load(), added.Load())
+	}
+}
+
+func TestRejectionContextThroughPool(t *testing.T) {
+	hooks := NewHooks()
+	pool := agilepool.NewPool(nil)
+	if err := pool.SetHook(hooks); err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	type contextKey struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "trace"))
+	cancel()
+	var calls atomic.Int64
+	hooks.AddTaskRejected(func(got context.Context) {
+		if got != ctx || got.Value(contextKey{}) != "trace" {
+			t.Error("rejection event lost task context")
+		}
+		calls.Add(1)
+	})
+	pool.SubmitCtx(ctx, agilepool.NewTask(func() error { t.Error("rejected task executed"); return nil }))
+	if calls.Load() != 1 {
+		t.Fatalf("rejection events = %d, want 1", calls.Load())
 	}
 }
 
@@ -137,7 +185,7 @@ func TestHooksConcurrentRegistrationAndDispatch(t *testing.T) {
 		iterations  = 100
 	)
 
-	var registered atomic.Int64
+	var registered, rejectionCalls atomic.Int64
 	var callbacks sync.WaitGroup
 	for i := 0; i < registrars; i++ {
 		callbacks.Add(1)
@@ -145,6 +193,7 @@ func TestHooksConcurrentRegistrationAndDispatch(t *testing.T) {
 			defer callbacks.Done()
 			for j := 0; j < iterations; j++ {
 				hooks.AddTaskEnqueued(func(context.Context) {})
+				hooks.AddTaskRejected(func(context.Context) { rejectionCalls.Add(1) })
 				registered.Add(1)
 			}
 		}()
@@ -155,6 +204,7 @@ func TestHooksConcurrentRegistrationAndDispatch(t *testing.T) {
 			defer callbacks.Done()
 			for j := 0; j < iterations; j++ {
 				hooks.DispatchTaskEnqueued(context.Background())
+				hooks.DispatchTaskRejected(context.Background())
 			}
 		}()
 	}
@@ -162,5 +212,10 @@ func TestHooksConcurrentRegistrationAndDispatch(t *testing.T) {
 
 	if got, want := registered.Load(), int64(registrars*iterations); got != want {
 		t.Fatalf("registered callbacks = %d, want %d", got, want)
+	}
+	before := rejectionCalls.Load()
+	hooks.DispatchTaskRejected(context.Background())
+	if got, want := rejectionCalls.Load()-before, int64(registrars*iterations); got != want {
+		t.Fatalf("callbacks retained after concurrent registration = %d, want %d", got, want)
 	}
 }

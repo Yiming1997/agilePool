@@ -38,3 +38,18 @@ type Hooks interface {
 	// DispatchPoolClosed must only be called by Pool.Close.
 	DispatchPoolClosed(*Pool)
 }
+
+// RejectedHooks is an optional extension to Hooks for non-nil submissions
+// refused before acceptance: a closed pool, NONBLOCK saturation, or cancellation
+// while submitting (including an already-cancelled SubmitCtx). Cancellation
+// after acceptance completes the task lifecycle and does not fire this event.
+//
+// Callbacks run synchronously in the submitter after rejection bookkeeping is
+// balanced and before the submission method returns. The context comes from
+// SubmitCtx/SubmitBefore or a task wrapped with UpdateTask. Nil tasks are ignored.
+// Wait does not wait for rejection callbacks; callers must also wait for their
+// submitting goroutines before taking a final rejection-count snapshot.
+// Existing Hooks implementations remain valid without this extension.
+type RejectedHooks interface {
+	DispatchTaskRejected(context.Context)
+}

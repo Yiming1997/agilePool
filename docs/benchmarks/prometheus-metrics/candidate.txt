@@ -1,0 +1,140 @@
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	30167353	        38.80 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11160723	        97.64 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12306265	        92.57 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  456798	      2678 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3121425	       376.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 4828951	       220.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  270012	      4449 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  285200	      4233 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  282640	      4229 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	29601343	        39.41 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11310520	        94.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12381651	        89.57 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  449054	      2727 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3116569	       375.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5239166	       218.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  270344	      4466 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  283413	      4228 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  283819	      4229 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	30632406	        38.66 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11156739	        92.84 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12393134	        88.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  457597	      2717 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3103728	       377.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5247349	       215.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  271804	      4432 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  282475	      4244 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  283159	      4221 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	30382822	        38.64 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11258989	        97.09 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12290120	        90.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  428368	      2648 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3113317	       378.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5139168	       228.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  270253	      4439 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  283214	      4238 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  283252	      4235 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	30710408	        38.84 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11226640	        99.29 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12284860	        90.60 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  454082	      2725 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3113982	       380.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5193717	       219.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  270439	      4418 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  284011	      4233 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  283809	      4239 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	26162428	        39.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11253308	        96.64 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12299618	        89.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  455101	      2667 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3099452	       381.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5246011	       221.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  268682	      4418 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  283698	      4247 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  282748	      4242 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	30549741	        38.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11213318	        99.41 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12293406	        88.74 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  457838	      2708 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3104098	       379.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5203971	       222.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  271404	      4416 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  282561	      4239 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  281733	      4240 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	30030030	        39.36 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11215455	        99.22 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12226569	        92.70 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  455022	      2701 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3084730	       379.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5328799	       217.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  270088	      4419 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  283084	      4241 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  283435	      4227 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	29891716	        39.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11018493	        99.06 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12260986	        99.89 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  417744	      2717 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3101596	       377.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5271488	       217.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  273380	      4425 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  283603	      4220 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  284746	      4227 ns/op	       6 B/op	       0 allocs/op
+PASS
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+BenchmarkMetricsOverhead/noop            	30389978	        39.41 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-8          	11534191	        97.03 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/noop-16         	12402600	        91.97 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu             	  454028	      2688 ns/op	       4 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-8           	 3082010	       378.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/cpu-16          	 5198542	       221.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us      	  270417	      4445 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-8    	  284553	      4225 ns/op	       6 B/op	       0 allocs/op
+BenchmarkMetricsOverhead/sleep100us-16   	  282894	      4214 ns/op	       6 B/op	       0 allocs/op
+PASS

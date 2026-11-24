@@ -1,0 +1,46 @@
+goos: windows
+goarch: amd64
+pkg: github.com/Yiming1997/agilePool/v2/benchmark
+cpu: AMD Ryzen 7 8845H w/ Radeon 780M Graphics
+                              │ upstream.txt │            disabled.txt            │              enabled.txt              │
+                              │    sec/op    │   sec/op     vs base               │    sec/op      vs base                │
+MetricsOverhead/noop             38.91n ± 4%   39.02n ± 2%       ~ (p=0.811 n=10)    67.33n ±  3%  +73.06% (p=0.000 n=10)
+MetricsOverhead/noop-8           94.30n ± 3%   93.50n ± 3%       ~ (p=0.101 n=10)   109.95n ±  2%  +16.59% (p=0.000 n=10)
+MetricsOverhead/noop-16          84.56n ± 4%   85.59n ± 3%       ~ (p=0.481 n=10)    98.71n ±  3%  +16.73% (p=0.000 n=10)
+MetricsOverhead/cpu              2.709µ ± 2%   2.725µ ± 2%       ~ (p=0.912 n=10)    2.748µ ±  3%        ~ (p=0.066 n=10)
+MetricsOverhead/cpu-8            385.9n ± 2%   385.6n ± 2%       ~ (p=0.839 n=10)    392.9n ±  2%   +1.81% (p=0.037 n=10)
+MetricsOverhead/cpu-16           231.9n ± 7%   228.4n ± 4%       ~ (p=0.616 n=10)    238.7n ± 10%        ~ (p=0.184 n=10)
+MetricsOverhead/sleep100us       4.462µ ± 1%   4.454µ ± 1%       ~ (p=0.517 n=10)    4.530µ ±  1%   +1.54% (p=0.005 n=10)
+MetricsOverhead/sleep100us-8     4.251µ ± 1%   4.232µ ± 1%       ~ (p=0.591 n=10)    4.272µ ±  1%        ~ (p=0.093 n=10)
+MetricsOverhead/sleep100us-16    4.267µ ± 1%   4.253µ ± 1%       ~ (p=0.288 n=10)    4.267µ ±  1%        ~ (p=0.617 n=10)
+geomean                          567.3n        566.5n       -0.15%                   629.6n        +10.99%
+
+                              │ upstream.txt  │             disabled.txt             │             enabled.txt              │
+                              │     B/op      │    B/op      vs base                 │    B/op      vs base                 │
+MetricsOverhead/noop            0.000 ±  0%     0.000 ±  0%       ~ (p=1.000 n=10) ¹   0.000 ±  0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/noop-8          0.000 ±  0%     0.000 ±  0%       ~ (p=1.000 n=10) ¹   0.000 ±  0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/noop-16         0.000 ±  0%     0.000 ±  0%       ~ (p=1.000 n=10) ¹   0.000 ±  0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu             4.000 ±  0%     4.000 ±  0%       ~ (p=1.000 n=10) ¹   4.000 ±  0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu-8           0.000 ±  0%     0.000 ±  0%       ~ (p=1.000 n=10) ¹   0.000 ±  0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu-16          0.000 ±  0%     0.000 ±  0%       ~ (p=1.000 n=10) ¹   0.000 ±  0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us      6.000 ± 17%     6.000 ± 17%       ~ (p=1.000 n=10)     6.000 ± 17%       ~ (p=1.000 n=10)
+MetricsOverhead/sleep100us-8    6.000 ±  0%     6.000 ±  0%       ~ (p=1.000 n=10) ¹   6.000 ±  0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us-16   6.000 ±  0%     6.000 ±  0%       ~ (p=1.000 n=10) ¹   6.000 ±  0%       ~ (p=1.000 n=10) ¹
+geomean                                     ²                +0.00%                ²                +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                              │ upstream.txt │            disabled.txt             │             enabled.txt             │
+                              │  allocs/op   │ allocs/op   vs base                 │ allocs/op   vs base                 │
+MetricsOverhead/noop            0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/noop-8          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/noop-16         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu             0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu-8           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/cpu-16          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us-8    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+MetricsOverhead/sleep100us-16   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹   0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                    ²               +0.00%                ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean

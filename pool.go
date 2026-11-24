@@ -308,6 +308,9 @@ func (p *Pool) SubmitCtx(ctx context.Context, task Task) {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil {
+		// SubmitCtx's explicit context takes precedence over any context
+		// already carried by task; no outer contextTask is created on this path.
+		p.dispatchTaskRejectedFor(ctx, nil)
 		return
 	}
 
@@ -323,6 +326,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 	p.addPending()
 	if atomic.LoadInt32(&p.closed) == 1 {
 		p.done() // Balance the addPending above because the closed pool rejects this task.
+		p.dispatchTaskRejectedFor(ctx, task)
 		return false
 	}
 	atomic.AddInt64(&p.submitCount, 1)
@@ -349,6 +353,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 			return true
 		default:
 			p.done()
+			p.dispatchTaskRejectedFor(ctx, task)
 			return false
 		}
 	}
@@ -373,6 +378,7 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 	switch result {
 	case taskBufferClosed:
 		p.done()
+		p.dispatchTaskRejectedFor(ctx, task)
 		return false
 	case taskBufferFull:
 		// Once both queues are saturated, do not use a bare channel send:
@@ -386,9 +392,11 @@ func (p *Pool) submit(ctx context.Context, task Task) bool {
 			return true
 		case <-ctx.Done():
 			p.done()
+			p.dispatchTaskRejectedFor(ctx, task)
 			return false
 		case <-p.closePoolCn:
 			p.done()
+			p.dispatchTaskRejectedFor(ctx, task)
 			return false
 		}
 	default:
@@ -411,6 +419,25 @@ func (p *Pool) dispatchTaskEnqueuedFor(task Task) {
 	}
 	p.dispatchHook(func(h Hooks) {
 		h.DispatchTaskEnqueued(ctx)
+	})
+}
+
+// dispatchTaskRejectedFor runs after admission bookkeeping has been balanced,
+// so a rejected callback cannot strand this submission in Wait. Existing hook
+// implementations need not implement the optional rejection event.
+func (p *Pool) dispatchTaskRejectedFor(ctx context.Context, task Task) {
+	if p.hooks == nil {
+		return
+	}
+	rejected, ok := p.hooks.(RejectedHooks)
+	if !ok {
+		return
+	}
+	if wrapped, ok := task.(*contextTask); ok {
+		ctx = wrapped.ctx
+	}
+	p.dispatchHook(func(Hooks) {
+		rejected.DispatchTaskRejected(ctx)
 	})
 }
 
@@ -782,6 +809,20 @@ func (p *Pool) GetRunningWorkersNum() int64 {
 // been allocated from sync.Pool.New over the pool's lifetime.
 func (p *Pool) GetWorkerCreateCount() int64 {
 	return atomic.LoadInt64(&p.workerCreateCount)
+}
+
+// GetPendingTaskCount returns unfinished tasks, including queued tasks,
+// worker-held tasks and submissions still waiting for queue space.
+func (p *Pool) GetPendingTaskCount() int64 {
+	return atomic.LoadInt64(&p.pendingTasks)
+}
+
+// GetQueuedTaskCount returns a snapshot of the handoff shards plus the
+// overflow buffer. It excludes tasks already fetched by workers (including
+// prefetched batches) and blocked submitters. Reading the buffer takes its
+// mutex; the shard and buffer readings are not one atomic snapshot.
+func (p *Pool) GetQueuedTaskCount() int64 {
+	return p.queuedTasks()
 }
 
 // GetTaskQueueLen returns the number of tasks currently queued in the

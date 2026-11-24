@@ -33,7 +33,7 @@
 - **带超时的提交** — `SubmitBefore` 设定执行截止时间。
 - **优雅关闭** — `Wait` 等待所有运行中任务完成；`Close` 停止接收新任务。
 - **自定义 Logger** — 可接入任何实现了 `Printf`/`Println` 的日志库（如 `zap.SugaredLogger`）。
-- **生命周期钩子** — `hook.NewHooks()` 分发 Submitted / Enqueued / Started / Completed / PoolClosed 回调；回调 panic 会被隔离并记录日志。
+- **生命周期钩子** — `hook.NewHooks()` 分发 Submitted / Enqueued / Started / Completed / PoolClosed 回调，并支持可选的 Rejected 扩展；回调 panic 会被隔离并记录日志。
 
 ## 安装
 
@@ -256,7 +256,7 @@ pool.SetLogger(zapLogger.Sugar())   // zap
 
 ## 生命周期钩子
 
-`hook` 包提供五类生命周期事件的默认分发器。请在提交任务前注册回调，然后通过 `SetHook` 安装：
+`hook` 包提供五类基础生命周期事件及可选拒绝事件的默认分发器。请在提交任务前注册回调，然后通过 `SetHook` 安装：
 
 ```go
 import (
@@ -269,6 +269,7 @@ import (
 h := hook.NewHooks()
 h.AddTaskSubmitted(func(ctx context.Context) { /* 已提交 */ })
 h.AddTaskEnqueued(func(ctx context.Context)  { /* 已入队 */ })
+h.AddTaskRejected(func(ctx context.Context)  { /* 接受前被拒绝，可选事件 */ })
 h.AddTaskStarted(func(ctx context.Context)   { /* 已开始 */ })
 h.AddTaskCompleted(func(ctx context.Context, recovered any) {
 	// 正常结束为 nil，否则为 panic 传入的值。
@@ -277,11 +278,88 @@ h.AddPoolClosed(func(p *agilepool.Pool) { /* 池已关闭 */ })
 pool.SetHook(h)
 ```
 
-- 回调在触发事件的 goroutine 中执行：`Submitted`/`Enqueued` 在提交方，`Started`/`Completed` 在 worker，`PoolClosed` 在 `Close` 调用方。
+- 回调在触发事件的 goroutine 中执行：`Submitted`/`Enqueued`/`Rejected` 在提交方，`Started`/`Completed` 在 worker，`PoolClosed` 在 `Close` 调用方。
 - 回调 panic 会被 recover 并记录日志，同一事件的其余回调不受影响。
 - `Enqueued` 对每个被接受的任务恰好触发一次。溢出缓冲路径下它在缓冲锁释放后派发，因此可能晚于 `Started`（甚至 `Completed`）被观察到；生命周期事件之间的顺序不做保证。
 - 回调不再接收 Task 本身，按任务携带数据请用 `SubmitCtx` 写入 ctx。
 - 必须在池开始处理任务前注册：每次分发都会无同步地读取钩子集合。自定义实现只需满足 `agilepool.Hooks` 的五个方法。
+
+## Prometheus 指标
+
+可选的 `metrics` 包使用 Prometheus 文本格式 0.0.4 暴露十个指标，
+不新增第三方依赖。任务计数保存在按需启用的 `Collector` 中，
+请在首次提交任务前，将其回调与用户回调注册到同一个 dispatcher：
+
+```go
+import (
+    "github.com/Yiming1997/agilePool/v2/hook"
+    "github.com/Yiming1997/agilePool/v2/metrics"
+)
+
+collector := metrics.NewCollector(pool)
+hooks := hook.NewHooks() // 也支持 hook/dynamic.NewHooks()。
+collector.Register(hooks)
+// 将用户自己的回调也注册到 hooks。
+pool.SetHook(hooks) // 在首次提交任务前安装，运行中不要替换。
+
+mux := http.NewServeMux()
+mux.Handle("/metrics", metrics.Handler(collector))
+// 也可以写入任意 io.Writer：
+// err := metrics.WriteText(w, collector)
+```
+
+运行 `go run ./example/prometheus_example`，请求
+`http://127.0.0.1:8080/submit` 后访问 `http://127.0.0.1:8080/metrics`。
+示例使用 NONBLOCK：接受任务返回 202，拒绝任务返回 503。
+
+| 指标名（默认） | 类型 | 含义 |
+| --- | --- | --- |
+| `agilepool_workers_running` | gauge | 处于运行循环中的 worker，包含取任务阶段，不含空闲停放的 worker。 |
+| `agilepool_workers_idle` | gauge | 等待复用的空闲 worker 对象数。 |
+| `agilepool_workers_created_total` | counter | 累计分配的 worker 对象数，不是 goroutine 启动次数。 |
+| `agilepool_tasks_submitted_total` | counter | 从注册回调开始观察到的接受任务数；任务内部重试不重复计数。 |
+| `agilepool_tasks_completed_total` | counter | 观察到的已结束 worker 处理的任务数，包含恢复的 panic 和取消后跳过的任务，不代表业务成功。 |
+| `agilepool_tasks_rejected_total` | counter | 观察到的在接受前因池关闭、NONBLOCK 队列满或取消而拒绝的非 nil 任务，包含提交前已取消的 `SubmitCtx`。 |
+| `agilepool_tasks_queued` | gauge | channel 分片与溢出缓冲区的任务数，不含阻塞提交者和 worker 已批量取出的任务。 |
+| `agilepool_task_queue_capacity` | gauge | 配置的 channel 总容量，不含溢出缓冲区和分片向上取整增加的槽位。 |
+| `agilepool_worker_capacity` | gauge | 配置的运行 worker 数量上限。 |
+| `agilepool_tasks_pending` | gauge | 尚未结束的任务数，包含排队、执行、预取和等待入队的任务。 |
+
+nil 任务不计数。接受后再取消的任务计入 completed，不计入 rejected。
+计数由 Collector 持有，与 scaler 周期性清零的速率统计独立，新建 Collector 时从零开始。
+请在首次提交任务前注册一次，以覆盖池的完整生命周期；未注册的 Collector 不会观察到任务事件。
+不要将同一个 Collector 用于多个池。`Register` 支持静态和 dynamic dispatcher；
+自定义 dispatcher 可调用 `OnTaskEnqueued`、`OnTaskCompleted` 和 `OnTaskRejected`，
+并实现可选的 `agilepool.RejectedHooks` 接口以提供准确拒绝计数。
+原有五方法 `Hooks` 接口保持兼容。
+
+completed 回调会在 `Wait` 返回前更新；拒绝回调在 pending 记账平衡之后、提交方法返回之前执行，
+核对最终拒绝数前应等待提交者返回。各指标分别采样，不构成一致性快照：
+极快的 worker 可能先完成，提交者才记录接受数，因此只应在提交者全部返回、
+任务全部排空后核对计数之间的等式。
+
+采集缓冲区长度会使用现有互斥锁，采集本身不安装或替换 hook，也不改变调度逻辑。
+queued 是并发环境下的队列占用快照，不能当作全部“尚未开始执行”的任务数。
+
+`metrics.WithNamespace("myapp")` 添加前缀，生成
+`myapp_agilepool_workers_running`；`metrics.WithSubsystem("pool")` 生成
+`agilepool_pool_workers_running`，两者可以组合，空字符串使用默认命名。
+拼接后的指标名必须由 ASCII 字母、下划线和数字组成，且不能以数字开头。
+名称不合法、Collector 或池为 nil 时，`WriteText` 返回错误，`Handler` 返回 HTTP 500；
+底层 writer 写入错误由 `WriteText` 返回。Handler 支持 GET 和 HEAD，
+其他方法返回 405，并携带 `Allow: GET, HEAD`。
+
+这些是供 Prometheus 抓取的应用指标。接入 Kubernetes HPA 还需要配置抓取和
+自定义指标适配器，单独暴露 `/metrics` 不会自动启用扩缩容。
+
+运行 `go test ./metrics` 验证文本与 HTTP 行为。将官方 `promtool` 加入 PATH 后，
+`go test ./metrics -run TestPromtool -v` 会额外解析并检查输出；工具缺失时仅跳过
+这项可选检查。运行 `go test ./metrics -run '^$' -bench BenchmarkWriteText -benchmem`
+可测量空闲状态和并发提交负载下的采集开销。
+
+未注册计数回调时，接受和执行任务的路径不增加指标递增操作；拒绝路径会检查可选的拒绝 hook。
+启用 Collector 后，即使没有抓取指标，也会产生回调分发和原子计数开销。
+上游原版、关闭采集和开启采集的对比见[三组吞吐量报告](docs/benchmarks/prometheus-metrics-optin/README.md)。
 
 ## 基准测试
 
