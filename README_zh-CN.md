@@ -193,24 +193,15 @@ pool := agilepool.NewPool(agilepool.NewConfig(
 
 Scaler 是整个池的核心调度机制，每 **`scalerPeriod`**（默认 10ms）运行一次，通过三步流水线决策是否需要扩容：
 
-**1. 速率采样** — `statsSampler` 每隔 `statsSamplePeriod`（100ms）原子性地 swap 并清零 `submitCount`、`consumeCount`、`exitCount` 三个计数器，将采样值写入滑动窗口**直方图**；同时把当前 running worker 数采样进一个精确值窗口。
+**1. 速率采样** — `statsSampler` 每隔 `statsSamplePeriod`（100ms）原子性地 swap 并清零 `submitCount`、`consumeCount`、`exitCount` 三个计数器，将采样值写入滑动窗口**直方图**。
 
-**2. 中位数提取** — 每个直方图用固定桶 + 环形缓冲区保留最近 `statsWindowSize`（10）个采样。`getMedianRates()` 返回 submit / consume / exit 速率的**近似中位数**——相比平均值，中位数对短暂毛刺的抵抗力强得多。`getRunningAverage()` 返回同一窗口内 running worker 数的**均值**。
+**2. 中位数提取** — 每个直方图用固定桶 + 环形缓冲区保留最近 `statsWindowSize`（10）个采样。`getMedianRates()` 返回 submit / consume / exit 速率的**近似中位数**——相比平均值，中位数对短暂毛刺的抵抗力强得多。
 
 **3. 扩缩决策** — `scaleIfNeeded()` 计算目标 worker 数：
 
 ```
-target = submitMed × runningAvg / consumeMed          (Little's Law 反推)
+target = submitMed × running / consumeMed          (Little's Law 反推)
 ```
-
-这里用的是**窗口均值** `runningAvg`，不是实时的 running 值。这个区别很关键：反推出的服务时间（`runningAvg / consumeMed`）是观察窗口的属性，所以扩容不会抬高池子自己的目标值。用实时值时，target 与当前 worker 数成正比，一次突发会在每个 scaler tick 上把池子乘一遍，直到被积压刹车拦住。
-
-| | 实时 `running` | 窗口 `runningAvg` |
-| --- | --- | --- |
-| 扩容后的 target | 下一跳又升高 | 窗口内不变 |
-| 突发峰值 goroutine（2 万任务/秒，任务 1ms） | 约 438 | 约 52 |
-
-代价是：target 每个统计窗口才能变动一次，突发时的爬坡比原来慢一个窗口。如果需要更快的爬坡且扛得住采样开销，可以调小 `statsSamplePeriod`。
 
 当存在任务积压（channel + 分块缓冲区中的任务），scaler 通过**动态衰减因子**变得更激进：
 

@@ -78,50 +78,6 @@ func (h *histogram) bucketIndex(value int64) int {
 	return len(h.buckets) - 1
 }
 
-// int64Window keeps the most recent n exact samples of an integer counter and
-// reports their mean. Unlike histogram it stores the raw values, so a counter
-// such as the running worker count is not distorted by bucket midpoints.
-//
-// The window is not safe for concurrent use; the caller serializes access.
-type int64Window struct {
-	samples []int64
-	pos     int
-	count   int
-	total   int64
-}
-
-// newInt64Window returns a window holding up to n samples. A non-positive n
-// yields a single-sample window.
-func newInt64Window(n int) *int64Window {
-	if n <= 0 {
-		n = 1
-	}
-	return &int64Window{samples: make([]int64, n)}
-}
-
-// add records v, evicting the oldest sample once the window is full.
-func (w *int64Window) add(v int64) {
-	if w.count == len(w.samples) {
-		w.total -= w.samples[w.pos]
-	} else {
-		w.count++
-	}
-	w.samples[w.pos] = v
-	w.total += v
-	w.pos++
-	if w.pos >= len(w.samples) {
-		w.pos = 0
-	}
-}
-
-// mean returns the average of the samples currently held, or 0 when empty.
-func (w *int64Window) mean() float64 {
-	if w.count == 0 {
-		return 0
-	}
-	return float64(w.total) / float64(w.count)
-}
-
 // default bucket definitions (counts per 100ms sample window)
 var (
 	submitBuckets = []bucketDef{
