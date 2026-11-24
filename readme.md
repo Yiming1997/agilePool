@@ -98,7 +98,7 @@ defer pool.Close()
 | `WithBacklogDecayFactor` | `0.3` | Weight (0–1) for backlog in the scaler target formula. Higher values make the scaler more aggressive at draining queues. |
 | `WithZeroConsumeScaleInterval` | `100ms` | Minimum interval between growth steps of the zero-consume fallback: when the pool has queued work but the measured consumption is zero (e.g. a burst of long tasks after an idle period), the scaler grows on queue depth at most once per interval. |
 | `WithMaxZeroConsumeScaleStep` | `64` | Maximum number of workers a single zero-consume growth step may add. |
-| `WithDrainHorizon` | `30ms` | Time the scaler aims to spend clearing the current backlog. The backlog-driven ramp-up target is `ceil(queuedTasks × serviceTime / drainHorizon)`, the number of workers that can finish the queued work within that time. Shorter horizons ramp up harder and cost more peak workers. |
+| `WithDrainHorizon` | `15ms` | Time the scaler aims to spend clearing the current backlog. The backlog-driven ramp-up target is `ceil(queuedTasks × serviceTime / drainHorizon)`, the number of workers that can finish the queued work within that time. Shorter horizons ramp up harder and cost more peak workers. |
 | `WithPanicHandler` | `nil` | Custom `func(task Task, recovered any, stack []byte)` invoked when a task panics, replacing the default log line. Defaults to logging with `SetLogger`. |
 
 > **Note**: `WithTaskQueueSize` controls the capacity of the internal handoff channel. Tasks beyond that capacity are stored in the dynamically growing chunked buffer.
@@ -214,11 +214,11 @@ target      = max(rateTarget, drainTarget)
 | | live `running` | windowed `runningAvg` |
 | --- | --- | --- |
 | Target after a scale-up | rises again next tick | unchanged within the window |
-| Burst peak goroutines (20k tasks/s, 1 ms) | ~440 | ~39 |
+| Steady-state peak goroutines (20k tasks/s, 1 ms tasks) | 439 | 47 |
 
 `drainTarget` closes the gap the window leaves behind. The rate target only moves once per statistics window, so a cold pool that receives a burst stays at one worker for a whole window and then grows one bounded step per window — under IO workloads the burst is over before the target reacts and the throughput is lost.
 
-`drainTarget` is the number of workers that can finish the queued work within `drainHorizon` (default 30 ms). Its service time is measured from the completions of the previous scaler tick, so it is available within a tick rather than a whole window, and it describes the workload rather than the queue depth: a pool serving slow tasks opens a large one for the same queue, a pool serving fast tasks keeps a small one. The target contains no worker count, so it cannot feed back on the pool's own scaling decision, and it shrinks with the queue, so it cannot run away.
+`drainTarget` is the number of workers that can finish the queued work within `drainHorizon` (default 15 ms). Its service time is measured from the completions of the previous scaler tick, so it is available within a tick rather than a whole window, and it describes the workload rather than the queue depth: a pool serving slow tasks opens a large one for the same queue, a pool serving fast tasks keeps a small one. The target contains no worker count, so it cannot feed back on the pool's own scaling decision, and it shrinks with the queue, so it cannot run away.
 
 When a backlog exists (tasks in the channel + chunked buffer), the scaler becomes more aggressive using a **dynamic decay factor**:
 
@@ -239,7 +239,7 @@ The scaler also compensates for expected worker exits (`exitMed`) and re-checks 
 | Scenario | Recommended tweak |
 | --- | --- |
 | Bursty, short-lived traffic | Increase `backlogDecayFactor` (e.g. 0.6) for faster ramp-up. |
-| Bursty, IO-bound traffic | Lower `WithDrainHorizon` (e.g. 10ms) so the pool opens up fast enough to drain the backlog. |
+| Bursty, IO-bound traffic | Lower `WithDrainHorizon` (e.g. 8ms) so the pool opens up fast enough to drain the backlog. |
 | Steady, predictable load | Decrease `scalerPeriod` to 5 ms for tighter tracking. |
 | Memory-constrained | Lower `WithWorkerNumCapacity` to cap peak workers. |
 

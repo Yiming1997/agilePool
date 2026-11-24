@@ -98,7 +98,7 @@ defer pool.Close()
 | `WithBacklogDecayFactor` | `0.3` | 积压在扩缩公式中的权重（0–1）。值越大，扩容越激进。 |
 | `WithZeroConsumeScaleInterval` | `100ms` | 零消费兜底扩容的最小间隔：池子有排队但实测消费速率为 0 时（如空闲后突发长任务），按排队量扩容的频率上限。 |
 | `WithMaxZeroConsumeScaleStep` | `64` | 单次零消费扩容最多新增的 worker 数。 |
-| `WithDrainHorizon` | `30ms` | 清空当前积压的目标时间。积压驱动的爬坡目标为 `ceil(queuedTasks × serviceTime / drainHorizon)`，即能在该时间内干完排队任务所需的 worker 数。值越小爬坡越猛、峰值越高。 |
+| `WithDrainHorizon` | `15ms` | 清空当前积压的目标时间。积压驱动的爬坡目标为 `ceil(queuedTasks × serviceTime / drainHorizon)`，即能在该时间内干完排队任务所需的 worker 数。值越小爬坡越猛、峰值越高。 |
 
 > **注意**：`WithTaskQueueSize` 控制内部交接 channel 的容量。超过该容量的任务会进入动态增长的分块缓冲区。
 
@@ -213,11 +213,11 @@ target      = max(rateTarget, drainTarget)
 | | 实时 `running` | 窗口 `runningAvg` |
 | --- | --- | --- |
 | 扩容后的 target | 下一跳又升高 | 窗口内不变 |
-| 突发峰值 goroutine（2 万任务/秒，任务 1ms） | 约 440 | 约 39 |
+| 稳态峰值 goroutine（2 万任务/秒，任务 1ms） | 439 | 47 |
 
 `drainTarget` 补的是窗口留下的缺口。速率目标每个统计窗口才能动一次，冷池接到突发后先用一个 worker 扛满整个窗口，之后每个窗口再涨一步有上限的一点点——IO 场景里突发往往在目标反应过来之前就结束了，吞吐就丢了。
 
-`drainTarget` 是「能在 `drainHorizon`（默认 30ms）内干完排队任务所需的 worker 数」。其中的服务时间用上一个 scaler tick 的完成数实测，一个 tick 内就有了，不用等整窗口；它描述的是任务本身而不是队列深度——同样深的队列，慢任务让池子开大，快任务让池子保持精简。这个目标里没有 worker 数，所以不会反过来影响池子的扩缩决策；它又随队列一起回落，所以不会失控。
+`drainTarget` 是「能在 `drainHorizon`（默认 15ms）内干完排队任务所需的 worker 数」。其中的服务时间用上一个 scaler tick 的完成数实测，一个 tick 内就有了，不用等整窗口；它描述的是任务本身而不是队列深度——同样深的队列，慢任务让池子开大，快任务让池子保持精简。这个目标里没有 worker 数，所以不会反过来影响池子的扩缩决策；它又随队列一起回落，所以不会失控。
 
 当存在任务积压（channel + 分块缓冲区中的任务），scaler 通过**动态衰减因子**变得更激进：
 
@@ -238,7 +238,7 @@ effectiveSubmit = submitMed + totalBacklog × dynamicDecay
 | 场景 | 建议调整 |
 | --- | --- |
 | 突发短流量 | 增大 `backlogDecayFactor`（如 0.6），加快扩容响应。 |
-| 突发 IO 流量 | 调小 `WithDrainHorizon`（如 10ms），让池子更快爬坡到能消化积压的规模。 |
+| 突发 IO 流量 | 调小 `WithDrainHorizon`（如 8ms），让池子更快爬坡到能消化积压的规模。 |
 | 平稳可预测负载 | 减小 `scalerPeriod` 至 5ms，更紧密跟踪。 |
 | 内存受限 | 降低 `WithWorkerNumCapacity` 限制峰值 worker 数。 |
 

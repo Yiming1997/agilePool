@@ -28,10 +28,11 @@ const (
 type LockType int8
 
 // defaultDrainHorizon is the default time the scaler aims to spend clearing
-// the current backlog. With a 30ms horizon a pool that measured a 1ms service
-// time needs 40 000 * 1ms / 30ms = 1333 workers to finish 40 000 queued
-// tasks, while a pool that measured a 10us service time needs only 13.
-const defaultDrainHorizon = 30 * time.Millisecond
+// the current backlog. It is a little over one scaler tick, so a pool that
+// measured a 1ms service time needs 40 000 * 1ms / 15ms = 2667 workers to
+// finish 40 000 queued tasks, while a pool that measured a 10us service time
+// needs only 27.
+const defaultDrainHorizon = 15 * time.Millisecond
 
 // Supported lock implementations for the idle-worker container.
 const (

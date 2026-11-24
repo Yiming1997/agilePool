@@ -281,7 +281,7 @@ setting that appears not to work should be checked against the accepted range.
 | `WithBacklogDecayFactor(f float64)` | `0.3` | Backlog weight in the scaling target, `[0, 1]`; outside that range ignored. Higher = more aggressive. |
 | `WithZeroConsumeScaleInterval(d time.Duration)` | `100ms` | Minimum gap between two growth steps of the zero-consume fallback. `<= 0` ignored. |
 | `WithMaxZeroConsumeScaleStep(n int64)` | `64` | Workers a single zero-consume growth step may add. `<= 0` ignored. |
-| `WithDrainHorizon(d time.Duration)` | `30ms` | Time the scaler aims to spend clearing the current backlog; drives the backlog-driven ramp-up target `ceil(queuedTasks * serviceTime / drainHorizon)`. `<= 0` ignored. |
+| `WithDrainHorizon(d time.Duration)` | `15ms` | Time the scaler aims to spend clearing the current backlog; drives the backlog-driven ramp-up target `ceil(queuedTasks * serviceTime / drainHorizon)`. `<= 0` ignored. |
 | `WithPanicHandler(h PanicHandler)` | `nil` | `func(task Task, recovered any, stack []byte)`; `nil` keeps logging. |
 
 Hard-coded constants (not configurable): overflow buffer cap `maxChunkLen = 100 000`,
