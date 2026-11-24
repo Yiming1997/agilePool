@@ -136,13 +136,32 @@ type Pool struct {
 
 	// ---- rate statistics for adaptive scaling ----
 	submitCount  int64 // atomic, tasks submitted per window
-	consumeCount int64 // atomic, tasks consumed per window
+	consumeCount int64 // atomic, tasks picked up by a worker per window
 	exitCount    int64 // atomic, goroutines exited per window
+	// doneCount is the monotonic number of tasks that finished. The scaler
+	// uses it to measure how long a task takes: a task that was picked up but
+	// has not returned yet says nothing about the service time.
+	doneCount int64
 
-	statMu      sync.Mutex
-	submitHist  *histogram // submit count distribution per window
-	consumeHist *histogram // consume count distribution per window
-	exitHist    *histogram // exit count distribution per window
+	// lastSampleConsume is the consumeCount value at the last statistics
+	// sample. Only the stats sampler touches it.
+	lastSampleConsume int64
+
+	statMu       sync.Mutex
+	submitWindow *medianWindow // submit count per window
+	consumeWin   *medianWindow // consume count per window
+	exitWindow   *medianWindow // exit count per window
+	// runningWindow keeps the running worker count sampled once per stats
+	// window. The scaler reads its mean instead of the instantaneous count so
+	// that scaling up does not immediately raise the pool's own target.
+	runningWindow *int64Window
+
+	// Tick-level state of the scaler goroutine: the doneCount value and the
+	// time at the previous tick. They give the completion rate of a single
+	// tick, which is what the backlog-driven ramp-up target uses to learn how
+	// long a task takes without waiting for a whole statistics window.
+	lastTickDone int64
+	lastTickAt   time.Time
 
 	// lastZeroConsumeScale is the timestamp of the last growth step taken by
 	// the zero-consume fallback in scaleIfNeeded; accessed only by the scaler
@@ -206,9 +225,10 @@ func NewPool(c *Config) *Pool {
 
 	atomic.StoreInt64(&p.workerCreateCount, 0)
 
-	p.submitHist = newHistogram(submitBuckets, c.statsWindowSize)
-	p.consumeHist = newHistogram(consumeBuckets, c.statsWindowSize)
-	p.exitHist = newHistogram(exitBuckets, c.statsWindowSize)
+	p.submitWindow = newMedianWindow(c.statsWindowSize)
+	p.consumeWin = newMedianWindow(c.statsWindowSize)
+	p.exitWindow = newMedianWindow(c.statsWindowSize)
+	p.runningWindow = newInt64Window(c.statsWindowSize)
 
 	p.workerPool.New = func() interface{} {
 		atomic.AddInt64(&p.workerCreateCount, 1)
@@ -564,15 +584,25 @@ func (p *Pool) statsSampler() {
 
 func (p *Pool) sampleRates() {
 	sub := atomic.SwapInt64(&p.submitCount, 0)
-	con := atomic.SwapInt64(&p.consumeCount, 0)
 	ext := atomic.SwapInt64(&p.exitCount, 0)
+
+	// consumeCount is a monotonic total: the scaler reads it as well, to
+	// measure the completion rate of a single tick, so it must not be reset
+	// here. Each reader keeps its own baseline instead.
+	cur := atomic.LoadInt64(&p.consumeCount)
+	con := cur - p.lastSampleConsume
+	p.lastSampleConsume = cur
 
 	p.statMu.Lock()
 	defer p.statMu.Unlock()
 
-	p.submitHist.add(sub)
-	p.consumeHist.add(con)
-	p.exitHist.add(ext)
+	p.submitWindow.add(sub)
+	p.consumeWin.add(con)
+	p.exitWindow.add(ext)
+	// Sample the running worker count in the same window as the rates, so the
+	// scaler reasons about one consistent snapshot of (arrivals, departures,
+	// concurrency) instead of mixing a windowed rate with a live counter.
+	p.runningWindow.add(atomic.LoadInt64(&p.runningWorkersNum))
 }
 
 // queuedTasks returns the number of tasks waiting for a worker: the handoff
@@ -586,6 +616,16 @@ func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
 	running := atomic.LoadInt64(&p.runningWorkersNum)
 
+	// serviceTime is how long one worker needs for one task, measured from
+	// the completions of the previous scaler tick. It is a property of the
+	// workload, not of the queue depth: a pool serving slow tasks needs many
+	// workers to drain a queue, a pool serving fast tasks needs few.
+	//
+	// The measurement is only trusted while the scaler runs on schedule. A
+	// long gap means the tick covered a period that is not representative of
+	// the current load, and the drain target is skipped instead.
+	serviceTime := p.measureServiceTime(running)
+
 	bufDepth := p.taskBuf.Len()
 
 	// totalBacklog uses pendingTasks (atomic), covering all submitted
@@ -595,9 +635,19 @@ func (p *Pool) scaleIfNeeded() {
 
 	var target int64
 
-	// Rate-based target: target = b / a = submitMed * running / consumeMed
-	if running > 0 && consumeMed > 0 && submitMed > 0 {
-		target = int64(submitMed * float64(running) / consumeMed)
+	// runningAvg is the mean running worker count over the same statistics
+	// window as submitMed and consumeMed. Using the windowed average instead
+	// of the live counter keeps the target from feeding back on itself: a
+	// scale-up changes `running` immediately, but the windowed snapshot stays
+	// fixed until the next sample, so the target cannot compound within one
+	// stale window.
+	runningAvg := p.getRunningAverage()
+
+	// Rate-based target: target = b / a = submitMed * runningAvg / consumeMed.
+	// The implied service time (runningAvg / consumeMed) is a property of the
+	// observed window, not of the pool's current size.
+	if runningAvg > 0 && consumeMed > 0 && submitMed > 0 {
+		target = int64(submitMed * runningAvg / consumeMed)
 	}
 
 	// Backlog-weighted target: treat backlog as additional incoming tasks.
@@ -619,7 +669,7 @@ func (p *Pool) scaleIfNeeded() {
 				(1-p.config.backlogDecayFactor)*bufPressure
 
 			effectiveSubmit := submitMed + float64(totalBacklog)*dynamicDecay
-			qTarget := int64(effectiveSubmit * float64(running) / consumeMed)
+			qTarget := int64(effectiveSubmit * runningAvg / consumeMed)
 			if qTarget > target {
 				target = qTarget
 			}
@@ -639,6 +689,34 @@ func (p *Pool) scaleIfNeeded() {
 				growth := min(queued, max(int64(1), running), p.config.maxZeroConsumeScaleStep, room)
 				target = running + growth
 				p.lastZeroConsumeScale = now
+			}
+		}
+	}
+
+	// Backlog-driven ramp-up target.
+	//
+	// The rate target above only moves once per statistics window, so a cold
+	// pool that receives a burst stays at one worker for a whole window and
+	// then grows one bounded step per window. Under IO workloads the burst is
+	// over before the target reacts and the throughput is lost.
+	//
+	// The target below is the number of workers that can finish the queued
+	// work within the drain horizon:
+	//
+	//	drainTarget = ceil(queuedTasks * serviceTime / drainHorizon)
+	//
+	// It contains no worker count, so it cannot feed back on the pool's own
+	// scaling decision, and it shrinks with the queue, so it cannot run away.
+	// Because it is derived from the measured service time, a pool serving
+	// fast tasks keeps a small pool while a pool serving slow tasks opens a
+	// large one for the same queue depth.
+	if p.config.drainHorizon > 0 && serviceTime > 0 {
+		queued := p.queuedTasks()
+		if queued > 0 {
+			need := float64(queued) * float64(serviceTime) / float64(p.config.drainHorizon)
+			drainTarget := int64(math.Ceil(need))
+			if drainTarget > target {
+				target = drainTarget
 			}
 		}
 	}
@@ -706,12 +784,52 @@ func (p *Pool) scaleIfNeeded() {
 	p.muIdle.Unlock()
 }
 
-// getMedianRates returns the median value of each counters from the histogram
-// (per-statsSamplePeriod). Returns (submitMed, consumeMed, exitMed).
+// measureServiceTime returns how long one worker needs for one task, based on
+// the completions of the previous scaler tick.
+//
+// It is called only by the scaler goroutine, which owns the tick state.
+// The measurement is skipped when the scaler has fallen behind schedule: the
+// tick then covers a period that is not representative of the current load,
+// and a zero result disables the backlog-driven target instead of sizing it
+// from a stale rate.
+func (p *Pool) measureServiceTime(running int64) time.Duration {
+	now := time.Now()
+	cur := atomic.LoadInt64(&p.doneCount)
+	done := cur - p.lastTickDone
+	elapsed := now.Sub(p.lastTickAt)
+	p.lastTickDone = cur
+	p.lastTickAt = now
+
+	if done <= 0 || running <= 0 || elapsed <= 0 {
+		return 0
+	}
+	if elapsed > 10*p.config.scalerPeriod {
+		return 0
+	}
+	// done tasks were completed by `running` workers in `elapsed`, so one
+	// worker completes one task every elapsed/(done/running).
+	perWorker := float64(elapsed) * float64(running) / float64(done)
+	return time.Duration(perWorker)
+}
+
+// getMedianRates returns the median value of each counters over the last
+// statsWindowSize windows (one sample per statsSamplePeriod).
+// Returns (submitMed, consumeMed, exitMed).
 func (p *Pool) getMedianRates() (submitMed, consumeMed, exitMed float64) {
 	p.statMu.Lock()
 	defer p.statMu.Unlock()
-	return p.submitHist.median(), p.consumeHist.median(), p.exitHist.median()
+	return p.submitWindow.median(), p.consumeWin.median(), p.exitWindow.median()
+}
+
+// getRunningAverage returns the mean running worker count over the statistics
+// window. It is sampled once per stats window, so it trails the live counter
+// by up to statsWindowSize windows; that lag is the point: the scaler decides
+// how many workers to run from a snapshot that its own recent scaling actions
+// cannot change.
+func (p *Pool) getRunningAverage() float64 {
+	p.statMu.Lock()
+	defer p.statMu.Unlock()
+	return p.runningWindow.mean()
 }
 
 // scaler periodically checks whether the pool needs more goroutines to keep up

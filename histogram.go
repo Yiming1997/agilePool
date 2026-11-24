@@ -1,113 +1,108 @@
 package agilepool
 
-type bucketDef struct {
-	low  int64
-	high int64 // -1 means infinity
+import "slices"
+
+// int64Window keeps the most recent n exact samples of an integer counter and
+// reports their mean. Unlike medianWindow it is used for the running worker
+// count, where the mean over the window is the quantity the scaler wants.
+//
+// The window is not safe for concurrent use; the caller serializes access.
+type int64Window struct {
+	samples []int64
+	pos     int
+	count   int
+	total   int64
 }
 
-// histogram implements a fixed-bucket histogram with FIFO eviction.
-// It tracks the frequency distribution of samples over the last N windows.
-type histogram struct {
-	buckets []bucketDef
-	counts  []int64    // current count per bucket
-	total   int64      // total samples currently tracked
-	samples []int      // ring buffer of bucket index for each sample
-	pos     int        // next write position
-	filled  bool       // true once ring buffer has wrapped
+// newInt64Window returns a window holding up to n samples. A non-positive n
+// yields a single-sample window.
+func newInt64Window(n int) *int64Window {
+	if n <= 0 {
+		n = 1
+	}
+	return &int64Window{samples: make([]int64, n)}
 }
 
-func newHistogram(buckets []bucketDef, windowSize int) *histogram {
-	return &histogram{
-		buckets: buckets,
-		counts:  make([]int64, len(buckets)),
-		samples: make([]int, windowSize),
+// add records v, evicting the oldest sample once the window is full.
+func (w *int64Window) add(v int64) {
+	if w.count == len(w.samples) {
+		w.total -= w.samples[w.pos]
+	} else {
+		w.count++
+	}
+	w.samples[w.pos] = v
+	w.total += v
+	w.pos++
+	if w.pos >= len(w.samples) {
+		w.pos = 0
 	}
 }
 
-func (h *histogram) add(value int64) {
-	idx := h.bucketIndex(value)
-
-	// If we're overwriting an old sample, decrement its bucket count
-	if h.filled {
-		oldIdx := h.samples[h.pos]
-		h.counts[oldIdx]--
-		h.total--
-	}
-
-	// Record new sample
-	h.samples[h.pos] = idx
-	h.counts[idx]++
-	h.total++
-
-	h.pos++
-	if h.pos >= len(h.samples) {
-		h.pos = 0
-		h.filled = true
-	}
-}
-
-// median returns the approximate median value by finding which bucket
-// contains the middle element, then returning the bucket midpoint.
-func (h *histogram) median() float64 {
-	if h.total == 0 {
+// mean returns the average of the samples currently held, or 0 when empty.
+func (w *int64Window) mean() float64 {
+	if w.count == 0 {
 		return 0
 	}
-
-	mid := h.total / 2
-	var cum int64
-	for i, cnt := range h.counts {
-		cum += cnt
-		if cum > mid {
-			b := h.buckets[i]
-			if b.high == -1 {
-				return float64(b.low) // bottom of open-ended bucket
-			}
-			return float64(b.low+b.high) / 2.0
-		}
-	}
-	return 0
+	return float64(w.total) / float64(w.count)
 }
 
-func (h *histogram) bucketIndex(value int64) int {
-	for i, b := range h.buckets {
-		if value >= b.low && (b.high == -1 || value <= b.high) {
-			return i
-		}
-	}
-	// Fallback: last bucket
-	return len(h.buckets) - 1
+// medianWindow keeps the most recent n exact samples of a counter and reports
+// their median.
+//
+// The scaler derives its worker target from the ratio of two measured rates,
+// so the precision of those rates decides the precision of the target. The
+// bucketed histogram this replaces rounded every sample to a bucket
+// midpoint and reported the lower bound of its open-ended top bucket, so a
+// measured rate of 40000 came back as 10001 while a rate of 200 came back as
+// 300.5. The ratio of two such estimates is off by up to a factor of five,
+// which is enough to make the scaler overshoot badly or stall completely
+// depending on which side of a bucket boundary the samples happened to fall.
+//
+// The median itself still filters short spikes: it is the middle of the last
+// n samples, so one anomalous window does not move it.
+type medianWindow struct {
+	samples []int64
+	pos     int
+	count   int
+	scratch []int64
 }
 
-// default bucket definitions (counts per 100ms sample window)
-var (
-	submitBuckets = []bucketDef{
-		{low: 0, high: 0},
-		{low: 1, high: 5},
-		{low: 6, high: 20},
-		{low: 21, high: 100},
-		{low: 101, high: 500},
-		{low: 501, high: 2000},
-		{low: 2001, high: 10000},
-		{low: 10001, high: -1},
+// newMedianWindow returns a window holding up to n samples. A non-positive n
+// yields a single-sample window.
+func newMedianWindow(n int) *medianWindow {
+	if n <= 0 {
+		n = 1
 	}
-	consumeBuckets = []bucketDef{
-		{low: 0, high: 0},
-		{low: 1, high: 5},
-		{low: 6, high: 20},
-		{low: 21, high: 100},
-		{low: 101, high: 500},
-		{low: 501, high: 2000},
-		{low: 2001, high: 10000},
-		{low: 10001, high: -1},
+	return &medianWindow{
+		samples: make([]int64, n),
+		scratch: make([]int64, n),
 	}
-	exitBuckets = []bucketDef{
-		{low: 0, high: 0},
-		{low: 1, high: 2},
-		{low: 3, high: 5},
-		{low: 6, high: 10},
-		{low: 11, high: 20},
-		{low: 21, high: 50},
-		{low: 51, high: 100},
-		{low: 101, high: -1},
+}
+
+// add records a sample, evicting the oldest one once the window is full.
+func (w *medianWindow) add(v int64) {
+	w.samples[w.pos] = v
+	w.pos++
+	if w.pos >= len(w.samples) {
+		w.pos = 0
 	}
-)
+	if w.count < len(w.samples) {
+		w.count++
+	}
+}
+
+// median returns the median of the samples currently held, or 0 when the
+// window is empty. With an even number of samples it returns the upper
+// middle one, which is what the previous bucketed implementation did.
+func (w *medianWindow) median() float64 {
+	if w.count == 0 {
+		return 0
+	}
+	// The ring buffer holds the valid samples in slots [0, count): before the
+	// ring wraps the first count slots are the ones written, and afterwards
+	// every slot is valid because the window is full.
+	sorted := w.scratch[:w.count]
+	copy(sorted, w.samples[:w.count])
+	slices.Sort(sorted)
+	return float64(sorted[w.count/2])
+}

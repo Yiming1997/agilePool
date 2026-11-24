@@ -27,6 +27,13 @@ const (
 //	SpinLock   = spin lock, suitable for very short hold times under high contention (recommended with RingQueue)
 type LockType int8
 
+// defaultDrainHorizon is the default time the scaler aims to spend clearing
+// the current backlog. It is a little over one scaler tick, so a pool that
+// measured a 1ms service time needs 40 000 * 1ms / 15ms = 2667 workers to
+// finish 40 000 queued tasks, while a pool that measured a 10us service time
+// needs only 27.
+const defaultDrainHorizon = 15 * time.Millisecond
+
 // Supported lock implementations for the idle-worker container.
 const (
 	MutexLock LockType = iota // sync.Mutex (default, compatible with existing behavior)
@@ -52,6 +59,11 @@ type Config struct {
 	// for example right after an idle period (see Pool.scaleIfNeeded).
 	zeroConsumeScaleInterval time.Duration
 	maxZeroConsumeScaleStep  int64
+	// drainHorizon is the time the scaler aims to spend clearing the current
+	// backlog. The backlog-driven ramp-up target is
+	// ceil(queuedTasks * serviceTime / drainHorizon): the number of workers
+	// that can finish the queued work within the horizon.
+	drainHorizon             time.Duration
 	panicHandler             PanicHandler // custom task-panic handler (nil keeps default logging)
 }
 
@@ -88,6 +100,7 @@ func NewConfig(opts ...ConfigOption) *Config {
 
 		zeroConsumeScaleInterval: defaultZeroConsumeScaleInterval,
 		maxZeroConsumeScaleStep:  defaultMaxZeroConsumeScaleStep,
+		drainHorizon:              defaultDrainHorizon,
 	}
 	for _, opt := range opts {
 		opt(config)
@@ -238,5 +251,27 @@ func WithMaxZeroConsumeScaleStep(n int64) ConfigOption {
 func WithPanicHandler(handler PanicHandler) ConfigOption {
 	return func(c *Config) {
 		c.panicHandler = handler
+	}
+}
+
+// WithDrainHorizon sets the time the scaler aims to spend clearing the
+// current backlog. The backlog-driven ramp-up target is
+//
+//	target = ceil(queuedTasks * serviceTime / drainHorizon)
+//
+// which is the number of workers that can finish the queued work within the
+// horizon. A short horizon makes the pool ramp up harder and drain bursts
+// faster at the cost of more workers; a long horizon keeps the pool leaner and
+// lets more work wait in the queue.
+//
+// The target only applies once the pool has measured how long a task takes.
+// Before that the scaler falls back to the rate-based target.
+//
+// Non-positive values are ignored.
+func WithDrainHorizon(d time.Duration) ConfigOption {
+	return func(c *Config) {
+		if d > 0 {
+			c.drainHorizon = d
+		}
 	}
 }

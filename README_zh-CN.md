@@ -23,7 +23,7 @@
 
 ## 特性
 
-- **自适应扩缩容** — 基于直方图中位数的速率追踪，自动调节 worker 数量匹配提交负载，支持可配置的积压衰减因子应对突发流量。
+- **自适应扩缩容** — 基于精确中位数的速率追踪 + 感知任务耗时的积压目标，自动调节 worker 数量匹配提交负载，支持可配置的积压衰减因子应对突发流量。
 - **有界 worker** — 通过 `WithWorkerNumCapacity` 限制最大并发数。
 - **无界任务缓冲** — 小容量内部交接 channel + 分块链表缓冲区，带背压上限（`maxChunkLen`）。
 - **阻塞 / 非阻塞提交模式** — `BLOCK` 模式下任务入队等待；`NONBLOCK` 模式下队列满时丢弃。
@@ -98,6 +98,7 @@ defer pool.Close()
 | `WithBacklogDecayFactor` | `0.3` | 积压在扩缩公式中的权重（0–1）。值越大，扩容越激进。 |
 | `WithZeroConsumeScaleInterval` | `100ms` | 零消费兜底扩容的最小间隔：池子有排队但实测消费速率为 0 时（如空闲后突发长任务），按排队量扩容的频率上限。 |
 | `WithMaxZeroConsumeScaleStep` | `64` | 单次零消费扩容最多新增的 worker 数。 |
+| `WithDrainHorizon` | `15ms` | 清空当前积压的目标时间。积压驱动的爬坡目标为 `ceil(queuedTasks × serviceTime / drainHorizon)`，即能在该时间内干完排队任务所需的 worker 数。值越小爬坡越猛、峰值越高。 |
 
 > **注意**：`WithTaskQueueSize` 控制内部交接 channel 的容量。超过该容量的任务会进入动态增长的分块缓冲区。
 
@@ -193,15 +194,30 @@ pool := agilepool.NewPool(agilepool.NewConfig(
 
 Scaler 是整个池的核心调度机制，每 **`scalerPeriod`**（默认 10ms）运行一次，通过三步流水线决策是否需要扩容：
 
-**1. 速率采样** — `statsSampler` 每隔 `statsSamplePeriod`（100ms）原子性地 swap 并清零 `submitCount`、`consumeCount`、`exitCount` 三个计数器，将采样值写入滑动窗口**直方图**。
+**1. 速率采样** — `statsSampler` 每隔 `statsSamplePeriod`（100ms）swap 并清零 `submitCount`、`exitCount` 两个计数器，把采样值连同 `consumeCount` 的增量和当前 running worker 数一起写入滑动窗口。
 
-**2. 中位数提取** — 每个直方图用固定桶 + 环形缓冲区保留最近 `statsWindowSize`（10）个采样。`getMedianRates()` 返回 submit / consume / exit 速率的**近似中位数**——相比平均值，中位数对短暂毛刺的抵抗力强得多。
+**2. 中位数提取** — 每个窗口**精确保留**最近 `statsWindowSize`（10）个采样。`getMedianRates()` 返回 submit / consume / exit 速率的**中位数**——相比平均值，中位数对短暂毛刺的抵抗力强得多；`getRunningAverage()` 返回同一窗口内 running worker 数的均值。
 
-**3. 扩缩决策** — `scaleIfNeeded()` 计算目标 worker 数：
+> 速率刻意用精确值统计。scaler 的目标值是两个速率的**比值**，而分桶直方图会把这个比值毁掉：submit 速率 10000 和 consume 速率 3571 落进同一个桶，都被报成 6000，scaler 于是认为自己在跟上，压根不扩容。精确采样保住了这个比值。
+
+**3. 扩缩决策** — `scaleIfNeeded()` 用两个互相独立的信号算目标 worker 数，取较大的那个：
 
 ```
-target = submitMed × running / consumeMed          (Little's Law 反推)
+rateTarget  = submitMed × runningAvg / consumeMed          (Little's Law 反推，稳态)
+drainTarget = ceil(queuedTasks × serviceTime / drainHorizon)  (突发爬坡)
+target      = max(rateTarget, drainTarget)
 ```
+
+这里用的是**窗口均值** `runningAvg`，不是实时的 running 值。这个区别很关键：反推出的服务时间（`runningAvg / consumeMed`）是观察窗口的属性，所以扩容不会抬高池子自己的目标值。用实时值时，target 与当前 worker 数成正比，一次突发会在每个 scaler tick 上把池子乘一遍，直到被积压刹车拦住。
+
+| | 实时 `running` | 窗口 `runningAvg` |
+| --- | --- | --- |
+| 扩容后的 target | 下一跳又升高 | 窗口内不变 |
+| 稳态峰值 goroutine（2 万任务/秒，任务 1ms） | 439 | 47 |
+
+`drainTarget` 补的是窗口留下的缺口。速率目标每个统计窗口才能动一次，冷池接到突发后先用一个 worker 扛满整个窗口，之后每个窗口再涨一步有上限的一点点——IO 场景里突发往往在目标反应过来之前就结束了，吞吐就丢了。
+
+`drainTarget` 是「能在 `drainHorizon`（默认 15ms）内干完排队任务所需的 worker 数」。其中的服务时间用上一个 scaler tick 的完成数实测，一个 tick 内就有了，不用等整窗口；它描述的是任务本身而不是队列深度——同样深的队列，慢任务让池子开大，快任务让池子保持精简。这个目标里没有 worker 数，所以不会反过来影响池子的扩缩决策；它又随队列一起回落，所以不会失控。
 
 当存在任务积压（channel + 分块缓冲区中的任务），scaler 通过**动态衰减因子**变得更激进：
 
@@ -222,6 +238,7 @@ effectiveSubmit = submitMed + totalBacklog × dynamicDecay
 | 场景 | 建议调整 |
 | --- | --- |
 | 突发短流量 | 增大 `backlogDecayFactor`（如 0.6），加快扩容响应。 |
+| 突发 IO 流量 | 调小 `WithDrainHorizon`（如 8ms），让池子更快爬坡到能消化积压的规模。 |
 | 平稳可预测负载 | 减小 `scalerPeriod` 至 5ms，更紧密跟踪。 |
 | 内存受限 | 降低 `WithWorkerNumCapacity` 限制峰值 worker 数。 |
 
