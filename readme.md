@@ -23,7 +23,7 @@
 
 ## Features
 
-- **Adaptive scaler** — histogram-based median rate tracking automatically adjusts the worker count to match submission load, with configurable backlog decay for burst handling.
+- **Adaptive scaler** — exact median rate tracking plus a service-time-aware backlog target automatically adjust the worker count to match submission load, with configurable backlog decay for burst handling.
 - **Bounded workers** with configurable capacity (`WithWorkerNumCapacity`).
 - **Unbounded task buffering** — small internal handoff channel + chunked linked-list buffer with backpressure (`maxChunkLen`).
 - **Blocking & non-blocking** submit modes.
@@ -98,6 +98,7 @@ defer pool.Close()
 | `WithBacklogDecayFactor` | `0.3` | Weight (0–1) for backlog in the scaler target formula. Higher values make the scaler more aggressive at draining queues. |
 | `WithZeroConsumeScaleInterval` | `100ms` | Minimum interval between growth steps of the zero-consume fallback: when the pool has queued work but the measured consumption is zero (e.g. a burst of long tasks after an idle period), the scaler grows on queue depth at most once per interval. |
 | `WithMaxZeroConsumeScaleStep` | `64` | Maximum number of workers a single zero-consume growth step may add. |
+| `WithDrainHorizon` | `30ms` | Time the scaler aims to spend clearing the current backlog. The backlog-driven ramp-up target is `ceil(queuedTasks × serviceTime / drainHorizon)`, the number of workers that can finish the queued work within that time. Shorter horizons ramp up harder and cost more peak workers. |
 | `WithPanicHandler` | `nil` | Custom `func(task Task, recovered any, stack []byte)` invoked when a task panics, replacing the default log line. Defaults to logging with `SetLogger`. |
 
 > **Note**: `WithTaskQueueSize` controls the capacity of the internal handoff channel. Tasks beyond that capacity are stored in the dynamically growing chunked buffer.
@@ -194,15 +195,30 @@ pool := agilepool.NewPool(agilepool.NewConfig(
 
 The scaler is the core mechanism that keeps the worker count aligned with the submission rate. It runs **every `scalerPeriod`** (default 10 ms) and uses a three-step pipeline:
 
-**1. Rate sampling** — Every `statsSamplePeriod` (100 ms), the `statsSampler` atomically swaps and resets three counters — `submitCount`, `consumeCount`, and `exitCount` — and records them into sliding-window **histograms**.
+**1. Rate sampling** — Every `statsSamplePeriod` (100 ms), the `statsSampler` swaps and resets the `submitCount` and `exitCount` counters and records them, together with the `consumeCount` delta and the running worker count, into sliding windows.
 
-**2. Median extraction** — Each histogram retains the last `statsWindowSize` (10) samples in a fixed-bucket ring buffer. `getMedianRates()` returns the **approximate median** submit / consume / exit rate, which is far more resilient to short spikes than an average.
+**2. Median extraction** — Each window retains the last `statsWindowSize` (10) samples **exactly**. `getMedianRates()` returns the **median** submit / consume / exit rate, which is far more resilient to short spikes than an average, and `getRunningAverage()` returns the mean running worker count over the same window.
 
-**3. Scaling decision** — `scaleIfNeeded()` computes the target worker count:
+> The rates are measured exactly on purpose. The scaler derives its target from the *ratio* of two rates, and a bucketed histogram destroyed that ratio: a submit rate of 10000 and a consume rate of 3571 landed in the same bucket and both came back as 6000, so the scaler concluded that it was keeping up and never grew the pool. Exact samples keep the ratio intact.
+
+**3. Scaling decision** — `scaleIfNeeded()` computes the target worker count from two independent signals and takes the larger one:
 
 ```
-target = submitMed × running / consumeMed          (Little's Law)
+rateTarget  = submitMed × runningAvg / consumeMed          (Little's Law, steady state)
+drainTarget = ceil(queuedTasks × serviceTime / drainHorizon)  (burst ramp-up)
+target      = max(rateTarget, drainTarget)
 ```
+
+`runningAvg` is the **windowed average** concurrency, not the live worker count. That distinction matters: the implied service time (`runningAvg / consumeMed`) is a property of the observed window, so a scale-up cannot raise the pool's own target. With the live count the target was proportional to the current worker size, which let one burst multiply the pool on every scaler tick until the backlog brake stopped it.
+
+| | live `running` | windowed `runningAvg` |
+| --- | --- | --- |
+| Target after a scale-up | rises again next tick | unchanged within the window |
+| Burst peak goroutines (20k tasks/s, 1 ms) | ~440 | ~39 |
+
+`drainTarget` closes the gap the window leaves behind. The rate target only moves once per statistics window, so a cold pool that receives a burst stays at one worker for a whole window and then grows one bounded step per window — under IO workloads the burst is over before the target reacts and the throughput is lost.
+
+`drainTarget` is the number of workers that can finish the queued work within `drainHorizon` (default 30 ms). Its service time is measured from the completions of the previous scaler tick, so it is available within a tick rather than a whole window, and it describes the workload rather than the queue depth: a pool serving slow tasks opens a large one for the same queue, a pool serving fast tasks keeps a small one. The target contains no worker count, so it cannot feed back on the pool's own scaling decision, and it shrinks with the queue, so it cannot run away.
 
 When a backlog exists (tasks in the channel + chunked buffer), the scaler becomes more aggressive using a **dynamic decay factor**:
 
@@ -223,6 +239,7 @@ The scaler also compensates for expected worker exits (`exitMed`) and re-checks 
 | Scenario | Recommended tweak |
 | --- | --- |
 | Bursty, short-lived traffic | Increase `backlogDecayFactor` (e.g. 0.6) for faster ramp-up. |
+| Bursty, IO-bound traffic | Lower `WithDrainHorizon` (e.g. 10ms) so the pool opens up fast enough to drain the backlog. |
 | Steady, predictable load | Decrease `scalerPeriod` to 5 ms for tighter tracking. |
 | Memory-constrained | Lower `WithWorkerNumCapacity` to cap peak workers. |
 

@@ -11,8 +11,10 @@ Package `agilepool` (`github.com/Yiming1997/agilePool/v2`, Go 1.23.4) is a gorou
 grows and shrinks itself from measured rates. Key traits, as implemented today:
 
 - **Adaptive scaling** — every `scalerPeriod` (10ms) the scaler computes
-  `target = submitMedian × runningWorkers / consumeMedian`, boosts it with backlog weight,
-  compensates for worker exits, and clamps it to `pendingTasks` and `capacity`.
+  `rateTarget = submitMedian × runningAvg / consumeMedian` and
+  `drainTarget = ceil(queuedTasks × serviceTime / drainHorizon)`, takes the larger of the two,
+  boosts it with backlog weight, compensates for worker exits, and clamps it to `pendingTasks`
+  and `capacity`.
 - **Sharded handoff queues** — the submit channel is split into a power-of-two number of shards
   (default: `min(GOMAXPROCS, 32)` once the handoff capacity is ≥ 1024) so producers and workers do not
   serialise on one channel lock.
@@ -273,12 +275,13 @@ setting that appears not to work should be checked against the accepted range.
 | `WithBlockMode(m WorkMode)` | `BLOCK` | `BLOCK` or `NONBLOCK`; any other value behaves like `BLOCK`. |
 | `WithIdleContainerType(t IdleContainerType)` | `LinkedListType` | Unknown values fall back to `LinkedListType`. |
 | `WithLockType(t LockType)` | `MutexLock` | `MutexLock` or `SpinLock` for `muIdle`. |
-| `WithStatsSamplePeriod(d time.Duration)` | `100ms` | Interval at which submit/consume/exit counters are swapped into the histograms. `<= 0` ignored. |
-| `WithStatsWindowSize(n int)` | `10` | Number of samples retained per histogram (median horizon). `<= 0` ignored. |
+| `WithStatsSamplePeriod(d time.Duration)` | `100ms` | Interval at which submit/consume/exit counters are sampled into the rate windows. `<= 0` ignored. |
+| `WithStatsWindowSize(n int)` | `10` | Number of samples retained per rate window (median horizon). `<= 0` ignored. |
 | `WithScalerPeriod(d time.Duration)` | `10ms` | Scaler decision tick. `<= 0` ignored. |
 | `WithBacklogDecayFactor(f float64)` | `0.3` | Backlog weight in the scaling target, `[0, 1]`; outside that range ignored. Higher = more aggressive. |
 | `WithZeroConsumeScaleInterval(d time.Duration)` | `100ms` | Minimum gap between two growth steps of the zero-consume fallback. `<= 0` ignored. |
 | `WithMaxZeroConsumeScaleStep(n int64)` | `64` | Workers a single zero-consume growth step may add. `<= 0` ignored. |
+| `WithDrainHorizon(d time.Duration)` | `30ms` | Time the scaler aims to spend clearing the current backlog; drives the backlog-driven ramp-up target `ceil(queuedTasks * serviceTime / drainHorizon)`. `<= 0` ignored. |
 | `WithPanicHandler(h PanicHandler)` | `nil` | `func(task Task, recovered any, stack []byte)`; `nil` keeps logging. |
 
 Hard-coded constants (not configurable): overflow buffer cap `maxChunkLen = 100 000`,
@@ -447,10 +450,12 @@ File map (all paths relative to the repository root):
   (`runningWorkersNum--`, `exitCount++`, push self into the idle container, return).
 - **`task_buffer.go`** — `chunkedTaskBuffer`: 4096-slot chunks, `PushAndForward` (push tail, then
   try to forward the head to a shard while holding `taskMu`), `PopBatch`, chunk recycling.
-- **`histogram.go`** — fixed-bucket histogram with FIFO ring eviction; `median()` returns the
-  midpoint of the bucket containing the middle sample, i.e. an approximation.
-  Submit/consume buckets: 0, 1-5, 6-20, 21-100, 101-500, 501-2000, 2001-10000, 10001+;
-  exit buckets: 0, 1-2, 3-5, 6-10, 11-20, 21-50, 51-100, 101+.
+- **`histogram.go`** — `medianWindow`: keeps the last n exact samples of a counter and returns their
+  median; `int64Window`: keeps the last n exact samples of the running worker count and returns
+  their mean. The rates are measured exactly on purpose — the scaler target is a *ratio* of two
+  rates, and bucketing collapsed that ratio whenever both rates fell into the same bucket
+  (a submit rate of 10000 and a consume rate of 3571 both came back as 6000, so the pool stopped
+  growing entirely on TCP workloads).
 - **`spinlock.go`** — three-phase spin lock implementing `sync.Locker`; `NewSpinLock` is exported.
 - **`hook.go`** — `Hooks` interface and the `TaskHook`/`TaskCompleteHook`/`PoolHook` types.
 - **`hook/hook.go`** — static dispatcher (`hook.NewHooks`), mutex-guarded registration.
@@ -486,8 +491,18 @@ File map (all paths relative to the repository root):
 - **Scaler invariants** — target is clamped by `pendingTasks` and `capacity`; spawning is
   re-checked under `p.lock`; spare idle workers are reused before allocating;
   `lastZeroConsumeScale` is touched only by the scaler goroutine, so it needs no lock.
-- **Rate sampling** — `sampleRates` swaps counters to zero under `statMu`; medians are read under
-  the same mutex. Adding a counter means updating sampling, histograms and `getMedianRates`.
+- **Rate sampling** — `sampleRates` swaps the submit/exit counters to zero under `statMu` and
+  records the consume delta and the running worker count; medians are read under the same mutex.
+  `consumeCount` is monotonic (each reader keeps its own baseline) because the scaler also reads
+  it. Adding a counter means updating sampling, the rate windows and `getMedianRates`.
+- **Two targets, not one** — `rateTarget = submitMed * runningAvg / consumeMed` only moves once
+  per statistics window, so a cold pool that receives a burst stays at one worker for a whole
+  window and then grows one bounded step per window; under IO workloads the burst is over before
+  the target reacts and the throughput is lost. `drainTarget = ceil(queuedTasks * serviceTime /
+  drainHorizon)` closes that gap: the service time is measured from the completions of the
+  previous scaler tick (`measureServiceTime`), so it is available within a tick and describes the
+  workload rather than the queue depth. The final target is `max(rateTarget, drainTarget)`, still
+  clamped by `pendingTasks` and `capacity`.
 - **Idle expiry** — the 1s age is hard-coded in `expiredWorkerCleaner`; `cleanPeriod` only sets
   the scan frequency.
 - **`Stack(skip)`** — performs file I/O per frame; only use it on error/panic paths.
