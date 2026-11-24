@@ -10,6 +10,11 @@ import (
 // seedTick makes the next measureServiceTime call report the given number of
 // completed tasks over a 10ms tick, which is what the scaler sees in
 // production.
+//
+// It has to be called right before the scaling decision it feeds. The service
+// time is derived from the wall-clock time between two ticks, so anything
+// that runs in between - submitting a few thousand tasks, for instance -
+// stretches the measured tick and inflates the service time with it.
 func seedTick(p *Pool, completed int64) {
 	p.lastTickDone = atomic.LoadInt64(&p.doneCount) - completed
 	p.lastTickAt = time.Now().Add(-10 * time.Millisecond)
@@ -57,9 +62,9 @@ func TestDrainTargetScalesWithTheMeasuredServiceTime(t *testing.T) {
 	// into 10 workers.
 	fast := newPool()
 	defer fast.Close()
-	seedTick(fast, 100)
 	releaseFast, doneFast := blockTasks(fast, 3000)
 	defer func() { releaseFast(); doneFast() }()
+	seedTick(fast, 100)
 	fast.scaleIfNeeded()
 	if got := fast.GetRunningWorkersNum(); got < 6 || got > 20 {
 		t.Fatalf("running workers = %d, want the drain target of about 10 for a 100us service time", got)
@@ -69,9 +74,9 @@ func TestDrainTargetScalesWithTheMeasuredServiceTime(t *testing.T) {
 	// same queue now needs the capacity.
 	slow := newPool()
 	defer slow.Close()
-	seedTick(slow, 1)
 	releaseSlow, doneSlow := blockTasks(slow, 3000)
 	defer func() { releaseSlow(); doneSlow() }()
+	seedTick(slow, 1)
 	slow.scaleIfNeeded()
 	if got := slow.GetRunningWorkersNum(); got != 100 {
 		t.Fatalf("running workers = %d, want the drain target to reach the capacity for a 10ms service time", got)
@@ -97,9 +102,9 @@ func TestDrainTargetNeedsAServiceTimeMeasurement(t *testing.T) {
 	))
 	defer p.Close()
 
-	seedTick(p, 0)
 	release, done := blockTasks(p, 3000)
 	defer func() { release(); done() }()
+	seedTick(p, 0)
 
 	p.scaleIfNeeded()
 	if got := p.GetRunningWorkersNum(); got > 2 {
@@ -122,9 +127,9 @@ func TestDrainTargetDoesNotFeedBackOnItself(t *testing.T) {
 	))
 	defer p.Close()
 
-	seedTick(p, 100)
 	release, done := blockTasks(p, 3000)
 	defer func() { release(); done() }()
+	seedTick(p, 100)
 
 	p.scaleIfNeeded()
 	afterFirst := p.GetRunningWorkersNum()
