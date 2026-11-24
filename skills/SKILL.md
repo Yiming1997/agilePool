@@ -451,6 +451,9 @@ File map (all paths relative to the repository root):
   midpoint of the bucket containing the middle sample, i.e. an approximation.
   Submit/consume buckets: 0, 1-5, 6-20, 21-100, 101-500, 501-2000, 2001-10000, 10001+;
   exit buckets: 0, 1-2, 3-5, 6-10, 11-20, 21-50, 51-100, 101+.
+  Also holds `int64Window`: an exact-value window that keeps the last N samples and
+  reports their mean. It is used for the running worker count, which must not be
+  quantised into buckets.
 - **`spinlock.go`** — three-phase spin lock implementing `sync.Locker`; `NewSpinLock` is exported.
 - **`hook.go`** — `Hooks` interface and the `TaskHook`/`TaskCompleteHook`/`PoolHook` types.
 - **`hook/hook.go`** — static dispatcher (`hook.NewHooks`), mutex-guarded registration.
@@ -488,6 +491,12 @@ File map (all paths relative to the repository root):
   `lastZeroConsumeScale` is touched only by the scaler goroutine, so it needs no lock.
 - **Rate sampling** — `sampleRates` swaps counters to zero under `statMu`; medians are read under
   the same mutex. Adding a counter means updating sampling, histograms and `getMedianRates`.
+- **Scaler target is not self-referential** — `target = submitMed × runningAvg / consumeMed`
+  uses `runningAvg`, the mean running worker count over the statistics window, not the live
+  worker count. A live count made the target proportional to the current pool size, so every
+  scaler tick multiplied the pool again until the backlog brake stopped it (burst peaks of
+  ~438 goroutines instead of ~52). Keep `running` out of the target formula; the live count
+  is still correct for `toSpawn = target - running` and for the cold-start branch.
 - **Idle expiry** — the 1s age is hard-coded in `expiredWorkerCleaner`; `cleanPeriod` only sets
   the scan frequency.
 - **`Stack(skip)`** — performs file I/O per frame; only use it on error/panic paths.
