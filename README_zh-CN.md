@@ -14,6 +14,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Yiming1997/agilePool" alt="License"></a>
   <a href="https://agilepool.stardreamer.cloud"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-agilepool.stardreamer.cloud-2F6FED?logo=googlechrome&logoColor=white" alt="官网"></a>
   <a href="https://hub.xerj.org/contributors/Yiming1997"><img src="https://hub.xerj.org/contributors/Yiming1997/badge.svg" alt="XERJ Corpus Hub contributor"></a>
+  <a href="https://awesome-go.com/#goroutines"><img src="https://awesome.re/mentioned-badge.svg" alt="收录于 Awesome Go"></a>
 </p>
 
 [English](README.md)
