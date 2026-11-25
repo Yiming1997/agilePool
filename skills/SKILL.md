@@ -516,10 +516,17 @@ File map (all paths relative to the repository root):
   per statistics window, so a cold pool that receives a burst stays at one worker for a whole
   window and then grows one bounded step per window; under IO workloads the burst is over before
   the target reacts and the throughput is lost. `drainTarget = ceil(queuedTasks * serviceTime /
-  drainHorizon)` closes that gap: the service time is measured from the completions of the
-  previous scaler tick (`measureServiceTime`), so it is available within a tick and describes the
-  workload rather than the queue depth. The final target is `max(rateTarget, drainTarget)`, still
-  clamped by `pendingTasks` and `capacity`.
+  drainHorizon)` closes that gap: the service time is measured per task (`measureServiceTime`),
+  so it is available as soon as one task returns and describes the workload rather than the
+  queue depth. The final target is `max(rateTarget, drainTarget)`, still clamped by
+  `pendingTasks` and `capacity`.
+- **Service time is measured per task** — a worker records how long the task took into a
+  lock-free ring (`serviceDurations`); the scaler reads the ring and takes the median. The
+  earlier estimate derived it from the tick aggregates (`elapsed * running / done`), which only
+  equals the task duration while every worker stays busy for the whole tick: a pool with spare
+  workers reported the tick period instead, and the drain target then sized the pool from that
+  inflated number. A sample older than `statsWindowSize * statsSamplePeriod` is ignored, so the
+  measurement returns 0 when the pool has not finished anything recently.
 - **Idle expiry** — the 1s age is hard-coded in `expiredWorkerCleaner`; `cleanPeriod` only sets
   the scan frequency.
 - **`Stack(skip)`** — performs file I/O per frame; only use it on error/panic paths.
