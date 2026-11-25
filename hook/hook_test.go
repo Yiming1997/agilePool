@@ -13,7 +13,7 @@ import (
 
 func newTestHooks() *Hooks {
 	h := NewHooks()
-	h.logger = *log.New(io.Discard, "", 0)
+	h.logger = log.New(io.Discard, "", 0)
 	return h
 }
 

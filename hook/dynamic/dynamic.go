@@ -22,7 +22,7 @@ import (
 type Hooks struct {
 	mu        sync.Mutex
 	snapshots atomic.Pointer[callbackSnapshot]
-	logger    log.Logger
+	logger    *log.Logger
 }
 
 // callbackSnapshot is one immutable generation of lifecycle callbacks.
@@ -43,7 +43,7 @@ var _ agilepool.RejectedHooks = (*Hooks)(nil)
 // NewHooks returns an empty dynamic dispatcher that logs recovered callback
 // panics through the standard logger.
 func NewHooks() *Hooks {
-	h := &Hooks{logger: *log.Default()}
+	h := &Hooks{}
 	h.snapshots.Store(&callbackSnapshot{})
 	return h
 }
@@ -148,7 +148,7 @@ func (h *Hooks) DispatchTaskCompleted(ctx context.Context, recovered any) {
 // DispatchPoolClosed dispatches one stable snapshot of pool-close callbacks.
 func (h *Hooks) DispatchPoolClosed(pool *agilepool.Pool) {
 	if pool == nil {
-		h.logger.Println("[ERROR] DispatchPoolClosed: received nil pointer")
+		h.getLogger().Println("[ERROR] DispatchPoolClosed: received nil pointer")
 		return
 	}
 	for _, fn := range h.snapshot().poolClosed {
@@ -177,13 +177,20 @@ func appendCallback[T any](callbacks []T, callback T) []T {
 	return next
 }
 
+func (h *Hooks) getLogger() *log.Logger {
+	if h.logger != nil {
+		return h.logger
+	}
+	return log.Default()
+}
+
 // invoke runs one callback with per-callback panic recovery. A panicking
 // callback must not prevent the remaining callbacks of the same event from
 // running.
 func (h *Hooks) invoke(fn func(), name string) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			h.logger.Printf("hook %s panicked: %v\n%s \n", name, recovered, agilepool.Stack(2))
+			h.getLogger().Printf("hook %s panicked: %v\n%s \n", name, recovered, agilepool.Stack(2))
 		}
 	}()
 	fn()
