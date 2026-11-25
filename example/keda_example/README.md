@@ -35,6 +35,30 @@ burning CPU, so the utilization target is never reached and the backlog
 grows without bound. The pool knows how many concurrent workers it wants,
 and that number does not depend on the task being CPU-bound.
 
+### The harder case: the downstream gets slow
+
+The same holds when the arrival rate does not change but the service time
+does. Injecting a 500 ms downstream call into the same workload:
+
+| | per-tick service time | per-task service time |
+| --- | --- | --- |
+| `workers_demand` during the storm | 0 | 237 → 442 |
+| replicas | 2 → 2, never scales | 2 → 4 → 6 |
+| peak queue | 3554 and still growing | 426, drained to 0 |
+| pod CPU | 80m → 60m, it *drops* | 66m → 137m |
+
+The CPU row is the interesting one. While the downstream is slow the pods
+are waiting, so the CPU utilisation falls and a CPU-based HPA sees nothing
+at all. It does not scale out, and with a scale-down policy it can even
+scale *in* while the backlog grows.
+
+This is also why the per-task service time measurement matters. The older
+per-tick measurement only samples the service time when a task completes
+inside one scaler tick, so a task slower than `10 × scalerPeriod` (100 ms
+by default) is never measured at all. The demand then reads 0, the
+external autoscaler sees nothing, and the pool never reports that it wants
+more workers.
+
 This is the one workload shape where the CPU proxy fails and the pool's own
 signal works. For CPU-bound tasks a CPU-based HPA is the simpler choice.
 
