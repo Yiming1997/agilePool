@@ -304,7 +304,7 @@ pool.SetHook(h)
 
 ## Prometheus 指标
 
-可选的 `metrics` 包使用 Prometheus 文本格式 0.0.4 暴露十个指标，
+可选的 `metrics` 包使用 Prometheus 文本格式 0.0.4 暴露十一个指标，
 不新增第三方依赖。任务计数保存在按需启用的 `Collector` 中，
 请在首次提交任务前，将其回调与用户回调注册到同一个 dispatcher：
 
@@ -333,6 +333,7 @@ mux.Handle("/metrics", metrics.Handler(collector))
 | 指标名（默认） | 类型 | 含义 |
 | --- | --- | --- |
 | `agilepool_workers_running` | gauge | 处于运行循环中的 worker，包含取任务阶段，不含空闲停放的 worker。 |
+| `agilepool_workers_target` | gauge | 自适应 scaler 认为这个池应该拥有的 worker 数，已按积压任务数和 worker 上限截断。 |
 | `agilepool_workers_idle` | gauge | 等待复用的空闲 worker 对象数。 |
 | `agilepool_workers_created_total` | counter | 累计分配的 worker 对象数，不是 goroutine 启动次数。 |
 | `agilepool_tasks_submitted_total` | counter | 从注册回调开始观察到的接受任务数；任务内部重试不重复计数。 |

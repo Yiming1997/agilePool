@@ -305,7 +305,7 @@ pool.SetHook(h)
 
 ## Prometheus metrics
 
-The optional `metrics` package exposes ten pool statistics using Prometheus text
+The optional `metrics` package exposes eleven pool statistics using Prometheus text
 format 0.0.4. Task counters live in an opt-in `Collector` with no additional dependencies.
 Register its callbacks alongside your own hooks before the first submission:
 
@@ -334,6 +334,7 @@ The example uses NONBLOCK and returns 503 for rejected tasks, 202 for accepted t
 | Metric (default name) | Type | Meaning |
 | --- | --- | --- |
 | `agilepool_workers_running` | gauge | Workers in the run loop, including fetching tasks; excludes parked workers. |
+| `agilepool_workers_target` | gauge | Workers the adaptive scaler wants this pool to have, clamped to the backlog and the worker capacity. |
 | `agilepool_workers_idle` | gauge | Worker structs parked for reuse. |
 | `agilepool_workers_created_total` | counter | Lifetime worker struct allocations, not goroutine starts. |
 | `agilepool_tasks_submitted_total` | counter | Accepted tasks observed since registration; each retrying task counts once. |

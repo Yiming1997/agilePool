@@ -83,6 +83,7 @@ func writeText(w io.Writer, c *Collector, prefix string) error {
 		value            int64
 	}{
 		{"workers_running", "gauge", "Workers in the run loop, excluding parked workers.", p.GetRunningWorkersNum()},
+		{"workers_target", "gauge", "Workers the adaptive scaler wants this pool to have, clamped to the backlog and the worker capacity.", p.GetScalerTarget()},
 		{"workers_idle", "gauge", "Workers parked for reuse.", p.GetIdleWorkerCount()},
 		{"workers_created_total", "counter", "Total worker structs allocated.", p.GetWorkerCreateCount()},
 		{"tasks_submitted_total", "counter", "Accepted tasks observed since collector registration.", c.GetSubmittedTaskCount()},

@@ -168,6 +168,18 @@ type Pool struct {
 	// goroutine.
 	lastZeroConsumeScale time.Time
 
+	// scalerTarget is the worker count the scaler last decided the pool
+	// should have. The scaler computes it from the submit/consume medians and
+	// the measured service time, clamps it to the outstanding backlog and to
+	// the worker capacity, and then spawns the difference. The value is
+	// published so that an external autoscaler can consume the pool's own
+	// decision instead of re-deriving it from raw queue depth.
+	//
+	// It is written only by the scaler goroutine and read by anyone, so it is
+	// accessed atomically. A value of 0 means the scaler has not observed any
+	// work yet, or the pool is idle.
+	scalerTarget atomic.Int64
+
 	hooks        Hooks        // lifecycle callbacks registered via SetHook
 	panicHandler PanicHandler // custom task-panic handler (nil keeps default logging)
 }
@@ -734,6 +746,14 @@ func (p *Pool) scaleIfNeeded() {
 	if target > p.capacity {
 		target = p.capacity
 	}
+
+	// Publish the decision before the early return below: a tick that decides
+	// the pool is already large enough is still a decision, and an external
+	// autoscaler needs to see it to know that the pool is not asking for more
+	// workers. The published value is the clamped target, so it never exceeds
+	// the outstanding backlog or the configured capacity.
+	p.scalerTarget.Store(target)
+
 	if target <= running {
 		return
 	}
@@ -927,6 +947,33 @@ func (p *Pool) GetRunningWorkersNum() int64 {
 // been allocated from sync.Pool.New over the pool's lifetime.
 func (p *Pool) GetWorkerCreateCount() int64 {
 	return atomic.LoadInt64(&p.workerCreateCount)
+}
+
+// GetScalerTarget returns the number of workers the adaptive scaler last
+// decided this pool should have.
+//
+// The scaler derives the value from the submit and consume rate medians and
+// from the measured per-task service time, then clamps it to the outstanding
+// backlog and to the configured worker capacity. It is therefore the number
+// of workers that would be useful right now, not the number that happen to
+// be running.
+//
+// The value is published on every scaler tick, including ticks that decide
+// no new worker is needed, so it stays meaningful while the pool is at
+// steady state. A value of 0 means the scaler has not observed any work
+// yet, or the pool is idle.
+//
+// A consumer that wants to grow beyond this pool should compare it with
+// GetRunningWorkersNum and GetCapacity: a target at the capacity ceiling
+// together with a non-empty queue means the pool wants more workers than it
+// is allowed to run.
+//
+// The scaler writes the value from its own goroutine and the getter may be
+// called from any goroutine, so the read is atomic. The value is a snapshot:
+// it can change on the next tick, which happens every scalerPeriod (10ms by
+// default).
+func (p *Pool) GetScalerTarget() int64 {
+	return p.scalerTarget.Load()
 }
 
 // GetPendingTaskCount returns unfinished tasks, including queued tasks,

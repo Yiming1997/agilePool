@@ -10,3 +10,7 @@ test/*.svg
 test/*.json
 test/*.prof
 test/*.exe
+
+# Built binaries for the Kubernetes autoscaling demo.
+example/k8s_demo/k8s-demo
+example/k8s_autoscaler/autoscaler
