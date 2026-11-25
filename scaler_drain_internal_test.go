@@ -7,17 +7,16 @@ import (
 	"time"
 )
 
-// seedTick makes the next measureServiceTime call report the given number of
-// completed tasks over a 10ms tick, which is what the scaler sees in
-// production.
+// seedServiceTime makes the next measureServiceTime call report the given
+// service time.
 //
-// It has to be called right before the scaling decision it feeds. The service
-// time is derived from the wall-clock time between two ticks, so anything
-// that runs in between - submitting a few thousand tasks, for instance -
-// stretches the measured tick and inflates the service time with it.
-func seedTick(p *Pool, completed int64) {
-	p.lastTickDone = atomic.LoadInt64(&p.doneCount) - completed
-	p.lastTickAt = time.Now().Add(-10 * time.Millisecond)
+// The service time is measured per task now: a worker records how long the
+// task took when it returns. The test writes into the same ring, so the
+// scaling decision sees the measurement it would see in production.
+func seedServiceTime(p *Pool, d time.Duration) {
+	idx := atomic.AddUint64(&p.serviceIdx, 1) - 1
+	atomic.StoreInt64(&p.serviceDurations[idx%uint64(len(p.serviceDurations))], int64(d))
+	atomic.StoreInt64(&p.serviceSampleAt, time.Now().UnixNano())
 }
 
 // blockTasks submits n tasks that block until the returned release function is
@@ -57,26 +56,24 @@ func TestDrainTargetScalesWithTheMeasuredServiceTime(t *testing.T) {
 		))
 	}
 
-	// Fast tasks: 100 completions in a 10ms tick by one worker is 100us per
-	// task. 3000 queued tasks are 0.3s of work, which 30ms of horizon turns
-	// into 10 workers.
+	// Fast tasks: 100us per task. 3000 queued tasks are 0.3s of work, which
+	// 30ms of horizon turns into 10 workers.
 	fast := newPool()
 	defer fast.Close()
 	releaseFast, doneFast := blockTasks(fast, 3000)
 	defer func() { releaseFast(); doneFast() }()
-	seedTick(fast, 100)
+	seedServiceTime(fast, 100*time.Microsecond)
 	fast.scaleIfNeeded()
 	if got := fast.GetRunningWorkersNum(); got < 6 || got > 20 {
 		t.Fatalf("running workers = %d, want the drain target of about 10 for a 100us service time", got)
 	}
 
-	// Slow tasks: one completion in a 10ms tick is a 10ms service time. The
-	// same queue now needs the capacity.
+	// Slow tasks: 10ms per task. The same queue now needs the capacity.
 	slow := newPool()
 	defer slow.Close()
 	releaseSlow, doneSlow := blockTasks(slow, 3000)
 	defer func() { releaseSlow(); doneSlow() }()
-	seedTick(slow, 1)
+	seedServiceTime(slow, 10*time.Millisecond)
 	slow.scaleIfNeeded()
 	if got := slow.GetRunningWorkersNum(); got != 100 {
 		t.Fatalf("running workers = %d, want the drain target to reach the capacity for a 10ms service time", got)
@@ -104,7 +101,6 @@ func TestDrainTargetNeedsAServiceTimeMeasurement(t *testing.T) {
 
 	release, done := blockTasks(p, 3000)
 	defer func() { release(); done() }()
-	seedTick(p, 0)
 
 	p.scaleIfNeeded()
 	if got := p.GetRunningWorkersNum(); got > 2 {
@@ -129,7 +125,7 @@ func TestDrainTargetDoesNotFeedBackOnItself(t *testing.T) {
 
 	release, done := blockTasks(p, 3000)
 	defer func() { release(); done() }()
-	seedTick(p, 100)
+	seedServiceTime(p, 100*time.Microsecond)
 
 	p.scaleIfNeeded()
 	afterFirst := p.GetRunningWorkersNum()

@@ -122,10 +122,6 @@ func (w *worker) runTask(task Task) {
 	// of what the hooks or handler do.
 	var recovered any
 	defer func() {
-		// Count the task as finished before the panic is handled: the scaler
-		// measures the service time from the completions, and a task that
-		// panicked did finish.
-		atomic.AddInt64(&w.pool.doneCount, 1)
 		if p := recover(); p != nil {
 			recovered = p
 			w.pool.handlePanic(task, p, Stack(1))
@@ -138,5 +134,13 @@ func (w *worker) runTask(task Task) {
 	w.pool.dispatchHook(func(h Hooks) {
 		h.DispatchTaskStarted(hookCtx)
 	})
+
+	// Measure the task itself, not the tick it happens to land in. The
+	// scaler uses this to size the pool from the queue depth, and an estimate
+	// derived from the tick aggregates reports the tick period whenever the
+	// pool has spare workers.
+	start := time.Now()
+	defer func() { w.pool.recordServiceTime(time.Since(start)) }()
+
 	task.process()
 }

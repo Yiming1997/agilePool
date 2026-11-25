@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,10 +139,6 @@ type Pool struct {
 	submitCount  int64 // atomic, tasks submitted per window
 	consumeCount int64 // atomic, tasks picked up by a worker per window
 	exitCount    int64 // atomic, goroutines exited per window
-	// doneCount is the monotonic number of tasks that finished. The scaler
-	// uses it to measure how long a task takes: a task that was picked up but
-	// has not returned yet says nothing about the service time.
-	doneCount int64
 
 	// lastSampleConsume is the consumeCount value at the last statistics
 	// sample. Only the stats sampler touches it.
@@ -156,12 +153,28 @@ type Pool struct {
 	// that scaling up does not immediately raise the pool's own target.
 	runningWindow *int64Window
 
-	// Tick-level state of the scaler goroutine: the doneCount value and the
-	// time at the previous tick. They give the completion rate of a single
-	// tick, which is what the backlog-driven ramp-up target uses to learn how
-	// long a task takes without waiting for a whole statistics window.
-	lastTickDone int64
-	lastTickAt   time.Time
+	// ---- service time measurement ----
+	//
+	// serviceDurations is a lock-free ring holding the durations of the most
+	// recent finished tasks, in nanoseconds. A worker writes one sample when
+	// a task returns; the scaler reads the ring and takes the median.
+	//
+	// The previous estimate derived the service time from the tick aggregates
+	// (elapsed x running / done), which only equals the task duration while
+	// every worker stays busy for the whole tick. A pool with spare workers
+	// reported the tick period instead, and the backlog-driven target then
+	// sized the pool from that inflated number.
+	serviceDurations []int64
+	// serviceIdx is the atomic write cursor into serviceDurations.
+	serviceIdx uint64
+	// serviceSampleAt is the unix-nanosecond timestamp of the newest sample.
+	serviceSampleAt int64
+	// serviceTimeMaxAge is how long a sample stays valid. A sample older than
+	// the statistics window describes a load the pool is no longer serving.
+	serviceTimeMaxAge time.Duration
+	// serviceScratch is the scaler-side scratch buffer for reading the ring;
+	// it is guarded by statMu.
+	serviceScratch []int64
 
 	// lastZeroConsumeScale is the timestamp of the last growth step taken by
 	// the zero-consume fallback in scaleIfNeeded; accessed only by the scaler
@@ -256,6 +269,8 @@ func NewPool(c *Config) *Pool {
 	p.consumeWin = newMedianWindow(c.statsWindowSize)
 	p.exitWindow = newMedianWindow(c.statsWindowSize)
 	p.runningWindow = newInt64Window(c.statsWindowSize)
+	p.serviceDurations = make([]int64, c.statsWindowSize)
+	p.serviceTimeMaxAge = time.Duration(c.statsWindowSize) * c.statsSamplePeriod
 
 	p.workerPool.New = func() interface{} {
 		atomic.AddInt64(&p.workerCreateCount, 1)
@@ -643,15 +658,15 @@ func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
 	running := atomic.LoadInt64(&p.runningWorkersNum)
 
-	// serviceTime is how long one worker needs for one task, measured from
-	// the completions of the previous scaler tick. It is a property of the
-	// workload, not of the queue depth: a pool serving slow tasks needs many
-	// workers to drain a queue, a pool serving fast tasks needs few.
+	// serviceTime is how long one task takes, measured from the tasks the
+	// pool has just finished. It is a property of the workload, not of the
+	// queue depth: a pool serving slow tasks needs many workers to drain a
+	// queue, a pool serving fast tasks needs few.
 	//
-	// The measurement is only trusted while the scaler runs on schedule. A
-	// long gap means the tick covered a period that is not representative of
-	// the current load, and the drain target is skipped instead.
-	serviceTime := p.measureServiceTime(running)
+	// The measurement is 0 when the pool has not finished a task recently, and
+	// the drain target is skipped then instead of sizing the pool from a
+	// guess.
+	serviceTime := p.measureServiceTime()
 
 	bufDepth := p.taskBuf.Len()
 
@@ -828,32 +843,69 @@ func (p *Pool) scaleIfNeeded() {
 	p.muIdle.Unlock()
 }
 
-// measureServiceTime returns how long one worker needs for one task, based on
-// the completions of the previous scaler tick.
+// recordServiceTime stores the duration of one finished task.
 //
-// It is called only by the scaler goroutine, which owns the tick state.
-// The measurement is skipped when the scaler has fallen behind schedule: the
-// tick then covers a period that is not representative of the current load,
-// and a zero result disables the backlog-driven target instead of sizing it
-// from a stale rate.
-func (p *Pool) measureServiceTime(running int64) time.Duration {
-	now := time.Now()
-	cur := atomic.LoadInt64(&p.doneCount)
-	done := cur - p.lastTickDone
-	elapsed := now.Sub(p.lastTickAt)
-	p.lastTickDone = cur
-	p.lastTickAt = now
+// It is called by a worker on the task-completion path, so it must not take a
+// lock: the ring is written with an atomic cursor and an atomic store, and
+// the scaler reads it once per tick.
+func (p *Pool) recordServiceTime(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	idx := atomic.AddUint64(&p.serviceIdx, 1) - 1
+	atomic.StoreInt64(&p.serviceDurations[idx%uint64(len(p.serviceDurations))], int64(d))
+	atomic.StoreInt64(&p.serviceSampleAt, time.Now().UnixNano())
+}
 
-	if done <= 0 || running <= 0 || elapsed <= 0 {
+// measureServiceTime returns how long one task takes, measured directly from
+// the tasks the pool has just finished.
+//
+// The previous estimate divided the tick duration by the completions per tick
+// and scaled it by the running worker count:
+//
+//	perWorker = elapsed * running / done
+//
+// That formula only equals the task duration while every worker stays busy
+// for the whole tick. A worker that finished early and waited for more work
+// inflates the result, so a pool with spare workers reported the tick period
+// instead of the task duration. The backlog-driven target then multiplied the
+// queue depth with that inflated number and asked for more workers, which
+// made the pool even less busy and the estimate even larger.
+//
+// The samples are taken per task, so they do not depend on the tick schedule
+// and do not care whether the workers are saturated. The result is the median
+// of the most recent samples: a stable estimate that a single slow task
+// cannot move.
+//
+// It returns 0 when there is no recent sample, so the caller can tell "not
+// measured yet" from "measured as zero".
+func (p *Pool) measureServiceTime() time.Duration {
+	last := atomic.LoadInt64(&p.serviceSampleAt)
+	if last == 0 {
 		return 0
 	}
-	if elapsed > 10*p.config.scalerPeriod {
+	// A sample older than the statistics window describes a load the pool is
+	// no longer serving, so it is not a measurement of the current service
+	// time.
+	if time.Since(time.Unix(0, last)) > p.serviceTimeMaxAge {
 		return 0
 	}
-	// done tasks were completed by `running` workers in `elapsed`, so one
-	// worker completes one task every elapsed/(done/running).
-	perWorker := float64(elapsed) * float64(running) / float64(done)
-	return time.Duration(perWorker)
+
+	p.statMu.Lock()
+	buf := p.serviceScratch[:0]
+	for i := range p.serviceDurations {
+		if v := atomic.LoadInt64(&p.serviceDurations[i]); v > 0 {
+			buf = append(buf, v)
+		}
+	}
+	p.serviceScratch = buf[:0]
+	p.statMu.Unlock()
+
+	if len(buf) == 0 {
+		return 0
+	}
+	slices.Sort(buf)
+	return time.Duration(buf[len(buf)/2])
 }
 
 // getMedianRates returns the median value of each counters over the last
