@@ -1,9 +1,11 @@
 package hook
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -132,6 +134,19 @@ func TestDispatchPoolClosedNilPoolIsIgnored(t *testing.T) {
 
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("closed callbacks with nil pool = %d, want 0", got)
+	}
+}
+
+func TestDispatchPoolClosedNilPoolUsesStandardLogger(t *testing.T) {
+	previous := log.Writer()
+	t.Cleanup(func() { log.SetOutput(previous) })
+	var output bytes.Buffer
+	log.SetOutput(&output)
+
+	NewHooks().DispatchPoolClosed(nil)
+
+	if got := output.String(); !strings.Contains(got, "received nil pointer") {
+		t.Fatalf("standard logger did not receive the nil-pool report; output = %q", got)
 	}
 }
 

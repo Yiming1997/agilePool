@@ -1,9 +1,11 @@
 package dynamic
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -97,6 +99,19 @@ func TestHooksCallbackPanicDoesNotStopRemainingCallbacks(t *testing.T) {
 	hooks.DispatchTaskRejected(context.Background())
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("remaining callbacks = %d, want 2", got)
+	}
+}
+
+func TestDispatchPoolClosedNilPoolUsesStandardLogger(t *testing.T) {
+	previous := log.Writer()
+	t.Cleanup(func() { log.SetOutput(previous) })
+	var output bytes.Buffer
+	log.SetOutput(&output)
+
+	NewHooks().DispatchPoolClosed(nil)
+
+	if got := output.String(); !strings.Contains(got, "received nil pointer") {
+		t.Fatalf("standard logger did not receive the nil-pool report; output = %q", got)
 	}
 }
 
