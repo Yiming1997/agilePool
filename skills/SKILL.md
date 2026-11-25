@@ -16,6 +16,7 @@ grows and shrinks itself from measured rates. Key traits, as implemented today:
   boosts it with backlog weight, compensates for worker exits, and clamps it to `pendingTasks`
   and `capacity`. The clamped result is published as `GetScalerTarget()`, so an external
   autoscaler can consume the pool's own decision instead of re-deriving the formula.
+  The value from before the capacity clamp is published separately as `GetScalerDemand()`.
 - **Sharded handoff queues** — the submit channel is split into a power-of-two number of shards
   (default: `min(GOMAXPROCS, 32)` once the handoff capacity is ≥ 1024) so producers and workers do not
   serialise on one channel lock.
@@ -184,6 +185,7 @@ pool.Wait()          // waits for accepted work
 ```go
 pool.GetRunningWorkersNum() int64   // workers currently in the run loop (excludes parked/idle)
 pool.GetScalerTarget()       int64   // workers the adaptive scaler wants this pool to have
+pool.GetScalerDemand()       int64   // the same decision before the worker capacity clamp
 pool.GetWorkerCreateCount() int64   // lifetime allocations from sync.Pool.New (cumulative)
 pool.GetIdleWorkerCount()   int64   // workers parked in the idle container
 pool.GetTaskQueueLen()      int     // tasks in handoff shards only — excludes the chunked buffer
@@ -198,9 +200,15 @@ There is no exported getter for the overflow-buffer depth; if you need the true 
 `GetScalerTarget()` is the scaler's own decision, published on every tick (including ticks that
 spawn nothing). It is the clamped target, so it never exceeds the outstanding backlog or
 `GetCapacity()`. A target sitting at the capacity ceiling while the queue is non-empty means the
-pool wants more workers than it is allowed to run — that is the signal a pod-level autoscaler
-should act on, and it is why an external scaler should consume this value rather than re-derive
-the pool's formula from raw queue depth.
+pool wants more workers than it is allowed to run.
+
+`GetScalerDemand()` is the same decision before the capacity clamp. It is still bounded by the
+outstanding backlog, because a worker runs one task at a time. Use it when the ceiling hides how
+far the pool wants to grow: a saturated pool reports the same target whether it needs one more
+worker or fifty. An external autoscaler that sums the demand of all pods and divides it by a
+per-pod concurrency budget obtains the desired pod count. The budget must stay below
+`GetCapacity()`, otherwise the summed value can never exceed the number of running pods and the
+workload never scales out.
 
 ### Logger and PanicHandler
 
@@ -508,10 +516,17 @@ File map (all paths relative to the repository root):
   per statistics window, so a cold pool that receives a burst stays at one worker for a whole
   window and then grows one bounded step per window; under IO workloads the burst is over before
   the target reacts and the throughput is lost. `drainTarget = ceil(queuedTasks * serviceTime /
-  drainHorizon)` closes that gap: the service time is measured from the completions of the
-  previous scaler tick (`measureServiceTime`), so it is available within a tick and describes the
-  workload rather than the queue depth. The final target is `max(rateTarget, drainTarget)`, still
-  clamped by `pendingTasks` and `capacity`.
+  drainHorizon)` closes that gap: the service time is measured per task (`measureServiceTime`),
+  so it is available as soon as one task returns and describes the workload rather than the
+  queue depth. The final target is `max(rateTarget, drainTarget)`, still clamped by
+  `pendingTasks` and `capacity`.
+- **Service time is measured per task** — a worker records how long the task took into a
+  lock-free ring (`serviceDurations`); the scaler reads the ring and takes the median. The
+  earlier estimate derived it from the tick aggregates (`elapsed * running / done`), which only
+  equals the task duration while every worker stays busy for the whole tick: a pool with spare
+  workers reported the tick period instead, and the drain target then sized the pool from that
+  inflated number. A sample older than `statsWindowSize * statsSamplePeriod` is ignored, so the
+  measurement returns 0 when the pool has not finished anything recently.
 - **Idle expiry** — the 1s age is hard-coded in `expiredWorkerCleaner`; `cleanPeriod` only sets
   the scan frequency.
 - **`Stack(skip)`** — performs file I/O per frame; only use it on error/panic paths.

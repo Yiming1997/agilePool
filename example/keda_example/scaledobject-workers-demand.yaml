@@ -1,0 +1,77 @@
+# Recommended ScaledObject: scale on the pool's own concurrency demand.
+#
+# Requires agilePool v2 with the agilepool_workers_demand gauge (this branch
+# and later). Use scaledobject-workers-target.yaml with an older release.
+#
+# How the replica count is derived:
+#
+#   KEDA reads /metrics from every ready endpoint of the Service and sums the
+#   agilepool_workers_demand values (aggregationType: sum). The HPA then
+#   computes
+#
+#       replicas = ceil(sum(demand) / targetValue)
+#
+#   because metricType AverageValue selects the per-pod external metric
+#   formula, which does not multiply by the replica count.
+#
+#   targetValue is therefore the concurrency budget of one pod: the number of
+#   workers one pod should carry before another pod is added.
+#
+# The budget MUST stay below POOL_WORKERS. agilepool_workers_target and
+# agilepool_workers_demand are clamped to the worker capacity, so a pod that
+# is saturated can only report "I am at my ceiling". With targetValue equal
+# to the capacity the summed value can never exceed the number of pods
+# already running, and the deployment never scales out.
+#
+# For the demo (POOL_WORKERS=8) a budget of 4 keeps one pod at half load and
+# leaves headroom for bursts.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: keda-example
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: keda-example
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  # pollingInterval and cooldownPeriod only affect scaling when
+  # minReplicaCount is 0 or idleReplicaCount is set. With minReplicaCount 1
+  # they are ignored for scaling, and KEDA logs a warning about it. The HPA
+  # behaviour below is what actually paces the autoscaler.
+  pollingInterval: 5
+  cooldownPeriod: 30
+  advanced:
+    # Scale out fast, scale down slowly. The scale-down stabilisation window
+    # is what keeps a burst from turning into a flapping loop.
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: metrics-api
+      # AverageValue is the KEDA default. It selects the per-pod HPA
+      # formula. Do not change it to Value: that formula multiplies by the
+      # replica count and scales out far too aggressively.
+      metricType: AverageValue
+      metadata:
+        # The host must be <service>.<namespace>; KEDA derives the
+        # EndpointSlice lookup from it.
+        url: http://keda-example.default.svc.cluster.local:8080/metrics
+        format: prometheus
+        valueLocation: agilepool_workers_demand
+        # Read every ready endpoint of the Service and sum the values.
+        aggregateFromKubeServiceEndpoints: "true"
+        aggregationType: sum
+        # Concurrency budget of one pod. Must be lower than POOL_WORKERS.
+        targetValue: "4"

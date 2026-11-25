@@ -1,0 +1,55 @@
+# ScaledObject variant that works with any agilePool v2 release.
+#
+# It uses agilepool_workers_target, the decision the scaler already publishes.
+# The difference to the workers_demand variant is what happens when a pod is
+# saturated: workers_target is clamped to the worker capacity, so a full pod
+# reports its ceiling and no longer says how many workers it would actually
+# need. The scale-out step is therefore quantised to capacity/budget, and the
+# deployment grows in more, smaller steps.
+#
+# Use this file when you cannot upgrade agilePool yet. Switch to
+# scaledobject-workers-demand.yaml for the finer steps.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: keda-example
+  namespace: default
+spec:
+  scaleTargetRef:
+    name: keda-example
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  # pollingInterval and cooldownPeriod only affect scaling when
+  # minReplicaCount is 0 or idleReplicaCount is set. With minReplicaCount 1
+  # they are ignored for scaling, and KEDA logs a warning about it. The HPA
+  # behaviour below is what actually paces the autoscaler.
+  pollingInterval: 5
+  cooldownPeriod: 30
+  advanced:
+    # Scale out fast, scale down slowly. The scale-down stabilisation window
+    # is what keeps a burst from turning into a flapping loop.
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: metrics-api
+      metricType: AverageValue
+      metadata:
+        url: http://keda-example.default.svc.cluster.local:8080/metrics
+        format: prometheus
+        valueLocation: agilepool_workers_target
+        aggregateFromKubeServiceEndpoints: "true"
+        aggregationType: sum
+        # Concurrency budget of one pod. Must be lower than POOL_WORKERS.
+        targetValue: "4"
