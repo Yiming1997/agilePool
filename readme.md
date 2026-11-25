@@ -335,6 +335,8 @@ The example uses NONBLOCK and returns 503 for rejected tasks, 202 for accepted t
 | --- | --- | --- |
 | `agilepool_workers_running` | gauge | Workers in the run loop, including fetching tasks; excludes parked workers. |
 | `agilepool_workers_target` | gauge | Workers the adaptive scaler wants this pool to have, clamped to the backlog and the worker capacity. |
+| `agilepool_workers_demand` | gauge | Workers the adaptive scaler wants, before the worker capacity clamp. Equal to `workers_target` until the capacity binds. |
+| `agilepool_workers_saturated` | gauge | 1 when the scaler demand exceeds the worker capacity, 0 otherwise. |
 | `agilepool_workers_idle` | gauge | Worker structs parked for reuse. |
 | `agilepool_workers_created_total` | counter | Lifetime worker struct allocations, not goroutine starts. |
 | `agilepool_tasks_submitted_total` | counter | Accepted tasks observed since registration; each retrying task counts once. |
@@ -374,9 +376,12 @@ underscores, digits, with no leading digit). Invalid names or a nil collector/po
 error from `WriteText`, or HTTP 500 from `Handler`. Writer errors are returned.
 The handler supports GET and HEAD; other methods receive 405 with `Allow: GET, HEAD`.
 
-These are scrapeable application metrics. Kubernetes HPA integration additionally
-requires Prometheus scraping and a custom metrics adapter; exposing `/metrics`
-alone does not configure autoscaling.
+These are scrapeable application metrics. Exposing `/metrics` alone does not
+configure autoscaling. For the Kubernetes Horizontal Pod Autoscaler, use the
+`metrics-api` scaler of [KEDA](example/keda_example/README.md): it reads the
+same endpoint from every ready pod and needs neither a Prometheus server nor a
+metrics adapter. A CPU-based HPA needs neither of them either, but it cannot
+see a pool that is waiting on IO.
 
 Validation: `go test ./metrics` covers the text and HTTP contracts. With the
 official `promtool` on PATH, `go test ./metrics -run TestPromtool -v` also parses
@@ -389,6 +394,51 @@ no new metric increments. Rejection paths check for the optional rejection hook.
 Enabling a collector adds callback dispatch and atomic counting even when metrics
 are not scraped. See the [three-way throughput report](docs/benchmarks/prometheus-metrics-optin/README.md)
 for upstream, collector-disabled, and collector-enabled measurements.
+
+## Autoscaling with KEDA
+
+The pool already knows how many workers it wants. `GetScalerTarget()` and
+`GetScalerDemand()` publish that decision, and KEDA's built-in `metrics-api`
+scaler reads it straight from the pod endpoints — no Prometheus server and no
+metrics adapter involved.
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: my-service
+spec:
+  scaleTargetRef:
+    name: my-service
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  triggers:
+    - type: metrics-api
+      metricType: AverageValue
+      metadata:
+        url: http://my-service.default.svc.cluster.local:8080/metrics
+        format: prometheus
+        valueLocation: agilepool_workers_demand
+        aggregateFromKubeServiceEndpoints: "true"
+        aggregationType: sum
+        targetValue: "4"
+```
+
+`targetValue` is the concurrency budget of one pod: how many workers a pod
+should carry before another pod is added. **It must stay below the pool's
+worker capacity.** Both concurrency metrics are clamped to that capacity, so
+a saturated pod reports exactly its ceiling; with a budget equal to the
+capacity the summed value can never exceed the number of pods already
+running, and the deployment never scales out.
+
+This targets short IO-bound tasks. While such a task waits, the pod burns
+almost no CPU, so a CPU-based HPA never scales out even while the backlog
+grows: measured on a kind cluster, two pods took the queue from 0 to 17309
+tasks while sitting at 131m of a 2000m CPU limit. The pool's own signal
+scales out and drains the backlog.
+
+The full walkthrough, the pod-side requirements and the traps to avoid are
+in [example/keda_example](example/keda_example/README.md).
 
 ## Benchmark
 

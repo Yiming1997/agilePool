@@ -1,0 +1,67 @@
+# Demo workload for the KEDA autoscaling example.
+#
+# The Service is a plain ClusterIP. KEDA's metrics-api scaler resolves it
+# through its EndpointSlice and reads /metrics from every ready endpoint, so
+# the Service must select all pods of the deployment.
+#
+# The readiness probe is what keeps a starting pod out of the aggregate: the
+# EndpointSlice only lists ready endpoints, and an unready pod contributes
+# nothing to the summed metric.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keda-example
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: keda-example
+  template:
+    metadata:
+      labels:
+        app: keda-example
+    spec:
+      containers:
+        - name: keda-example
+          image: agilepool-keda-example:1
+          imagePullPolicy: IfNotPresent
+          env:
+            # The hard worker ceiling of one pod. The autoscaling budget must
+            # stay below this value, otherwise a saturated pod can no longer
+            # report that it wants more workers.
+            - name: POOL_WORKERS
+              value: "8"
+            # The task duration. Short tasks are the case this scheme is
+            # built for: they need many concurrent workers per pod, and they
+            # leave the CPU almost idle while they wait.
+            - name: TASK_MS
+              value: "5"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: "2"
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keda-example
+  namespace: default
+spec:
+  selector:
+    app: keda-example
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

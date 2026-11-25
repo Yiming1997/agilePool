@@ -39,10 +39,10 @@ func TestWriteText(t *testing.T) {
 	if err := WriteText(&out, c); err != nil {
 		t.Fatal(err)
 	}
-	names := []string{"workers_running", "workers_target", "workers_idle", "workers_created_total", "tasks_submitted_total", "tasks_completed_total", "tasks_rejected_total", "tasks_queued", "task_queue_capacity", "worker_capacity", "tasks_pending"}
+	names := []string{"workers_running", "workers_target", "workers_demand", "workers_saturated", "workers_idle", "workers_created_total", "tasks_submitted_total", "tasks_completed_total", "tasks_rejected_total", "tasks_queued", "task_queue_capacity", "worker_capacity", "tasks_pending"}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
-	if len(lines) != 33 || !strings.HasSuffix(out.String(), "\n") {
-		t.Fatalf("expected 33 newline-terminated lines, got %q", out.String())
+	if len(lines) != 39 || !strings.HasSuffix(out.String(), "\n") {
+		t.Fatalf("expected 39 newline-terminated lines, got %q", out.String())
 	}
 	for i, suffix := range names {
 		name := "agilepool_" + suffix
@@ -462,5 +462,127 @@ func TestWorkersTargetMatchesPool(t *testing.T) {
 			t.Fatalf("GetScalerTarget() = %d is outside [0, %d]", direct, capacity)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// readGauge returns the value of a gauge from the metrics text output.
+func readGauge(t *testing.T, c *Collector, name string) int64 {
+	t.Helper()
+	var out bytes.Buffer
+	if err := WriteText(&out, c); err != nil {
+		t.Fatal(err)
+	}
+	prefix := "agilepool_" + name + " "
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				t.Fatalf("malformed sample %q", line)
+			}
+			v, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return v
+		}
+	}
+	t.Fatalf("%s not found in %q", name, out.String())
+	return 0
+}
+
+// TestWorkersDemandExceedsTargetWhenCapacityClamps pins the property that
+// makes workers_demand useful to an external autoscaler: when the worker
+// capacity clamps the scaler's decision, the demand still reports how many
+// workers would actually be useful, while the target can only report the
+// ceiling.
+func TestWorkersDemandExceedsTargetWhenCapacityClamps(t *testing.T) {
+	p := agilepool.NewPool(agilepool.NewConfig(
+		agilepool.WithWorkerNumCapacity(1),
+		agilepool.WithTaskQueueSize(1024),
+		agilepool.WithScalerPeriod(time.Millisecond),
+	))
+	defer p.Close()
+
+	blocking := make(chan struct{})
+	defer close(blocking)
+	for i := 0; i < 50; i++ {
+		p.Submit(agilepool.NewTask(func() error {
+			<-blocking
+			return nil
+		}))
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.GetScalerDemand() > p.GetScalerTarget() {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	demand := p.GetScalerDemand()
+	target := p.GetScalerTarget()
+	if demand <= target {
+		t.Fatalf("expected the demand to exceed the clamped target, got demand=%d target=%d", demand, target)
+	}
+	if target != p.GetCapacity() {
+		t.Fatalf("expected the target to sit at the capacity ceiling, got target=%d capacity=%d", target, p.GetCapacity())
+	}
+	// The demand is still bounded by the outstanding backlog: a worker runs one
+	// task at a time, so more workers than pending tasks cannot help.
+	if backlog := p.GetPendingTaskCount(); demand > backlog {
+		t.Fatalf("demand %d exceeds the outstanding backlog %d", demand, backlog)
+	}
+}
+
+// TestWorkersDemandMatchesPool checks that the exported workers_demand and
+// workers_saturated gauges agree with the pool's own getters.
+func TestWorkersDemandMatchesPool(t *testing.T) {
+	p := agilepool.NewPool(agilepool.NewConfig(
+		agilepool.WithWorkerNumCapacity(1),
+		agilepool.WithTaskQueueSize(1024),
+		agilepool.WithScalerPeriod(time.Millisecond),
+	))
+	defer p.Close()
+	c := newTestCollector(t, p)
+
+	// An idle pool has a demand of 0 and is not saturated.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.GetScalerDemand() == 0 && p.GetScalerTarget() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := readGauge(t, c, "workers_demand"); got != p.GetScalerDemand() {
+		t.Fatalf("exported demand %d does not match GetScalerDemand() %d", got, p.GetScalerDemand())
+	}
+	if got := readGauge(t, c, "workers_saturated"); got != 0 {
+		t.Fatalf("an idle pool must not be reported as saturated, got %d", got)
+	}
+
+	blocking := make(chan struct{})
+	defer close(blocking)
+	for i := 0; i < 50; i++ {
+		p.Submit(agilepool.NewTask(func() error {
+			<-blocking
+			return nil
+		}))
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if readGauge(t, c, "workers_saturated") == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := readGauge(t, c, "workers_saturated"); got != 1 {
+		t.Fatalf("a pool clamped by its capacity must be reported as saturated, got %d", got)
+	}
+	exported := readGauge(t, c, "workers_demand")
+	direct := p.GetScalerDemand()
+	if exported <= 0 || direct <= 0 {
+		t.Fatalf("expected a positive demand, got exported=%d direct=%d", exported, direct)
 	}
 }

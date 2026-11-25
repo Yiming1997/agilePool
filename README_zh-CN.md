@@ -304,7 +304,7 @@ pool.SetHook(h)
 
 ## Prometheus 指标
 
-可选的 `metrics` 包使用 Prometheus 文本格式 0.0.4 暴露十一个指标，
+可选的 `metrics` 包使用 Prometheus 文本格式 0.0.4 暴露十三个指标，
 不新增第三方依赖。任务计数保存在按需启用的 `Collector` 中，
 请在首次提交任务前，将其回调与用户回调注册到同一个 dispatcher：
 
@@ -334,6 +334,8 @@ mux.Handle("/metrics", metrics.Handler(collector))
 | --- | --- | --- |
 | `agilepool_workers_running` | gauge | 处于运行循环中的 worker，包含取任务阶段，不含空闲停放的 worker。 |
 | `agilepool_workers_target` | gauge | 自适应 scaler 认为这个池应该拥有的 worker 数，已按积压任务数和 worker 上限截断。 |
+| `agilepool_workers_demand` | gauge | 自适应 scaler 想要的 worker 数，尚未按 worker 上限截断；上限没生效时与 `workers_target` 相同。 |
+| `agilepool_workers_saturated` | gauge | scaler 的需求超过 worker 上限时为 1，否则为 0。 |
 | `agilepool_workers_idle` | gauge | 等待复用的空闲 worker 对象数。 |
 | `agilepool_workers_created_total` | counter | 累计分配的 worker 对象数，不是 goroutine 启动次数。 |
 | `agilepool_tasks_submitted_total` | counter | 从注册回调开始观察到的接受任务数；任务内部重试不重复计数。 |
@@ -368,8 +370,10 @@ queued 是并发环境下的队列占用快照，不能当作全部“尚未开�
 底层 writer 写入错误由 `WriteText` 返回。Handler 支持 GET 和 HEAD，
 其他方法返回 405，并携带 `Allow: GET, HEAD`。
 
-这些是供 Prometheus 抓取的应用指标。接入 Kubernetes HPA 还需要配置抓取和
-自定义指标适配器，单独暴露 `/metrics` 不会自动启用扩缩容。
+这些是供 Prometheus 抓取的应用指标。单独暴露 `/metrics` 不会自动启用扩缩容。
+接入 Kubernetes Horizontal Pod Autoscaler 可以用 [KEDA](example/keda_example/README_zh-CN.md)
+的 `metrics-api` scaler：它直接读取每个就绪 Pod 的同一个端点，既不需要 Prometheus，
+也不需要自定义指标适配器。CPU 型 HPA 同样不需要这两样，但它看不见正在等 IO 的池。
 
 运行 `go test ./metrics` 验证文本与 HTTP 行为。将官方 `promtool` 加入 PATH 后，
 `go test ./metrics -run TestPromtool -v` 会额外解析并检查输出；工具缺失时仅跳过
@@ -379,6 +383,47 @@ queued 是并发环境下的队列占用快照，不能当作全部“尚未开�
 未注册计数回调时，接受和执行任务的路径不增加指标递增操作；拒绝路径会检查可选的拒绝 hook。
 启用 Collector 后，即使没有抓取指标，也会产生回调分发和原子计数开销。
 上游原版、关闭采集和开启采集的对比见[三组吞吐量报告](docs/benchmarks/prometheus-metrics-optin/README.md)。
+
+## 用 KEDA 做自动扩缩容
+
+池本来就知道自己想要多少 worker。`GetScalerTarget()` 和 `GetScalerDemand()`
+把这个决策发布出来，KEDA 内置的 `metrics-api` scaler 可以直接从各个 Pod 的
+端点读它——既不需要 Prometheus，也不需要自定义指标适配器。
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: my-service
+spec:
+  scaleTargetRef:
+    name: my-service
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  triggers:
+    - type: metrics-api
+      metricType: AverageValue
+      metadata:
+        url: http://my-service.default.svc.cluster.local:8080/metrics
+        format: prometheus
+        valueLocation: agilepool_workers_demand
+        aggregateFromKubeServiceEndpoints: "true"
+        aggregationType: sum
+        targetValue: "4"
+```
+
+`targetValue` 是单个 Pod 的并发预算：一个 Pod 扛多少并发之后再加一个 Pod。
+**它必须小于池的 worker 上限。** 两个并发度指标都被这个上限截断，饱和的 Pod
+只能报出自己的上限；如果 budget 等于上限，总和永远不可能超过已经运行的 Pod
+数，于是**永远不会扩容**。
+
+这个方案针对的是**短时 IO 密集任务**。这类任务等待期间几乎不消耗 CPU，所以
+即便队列在堆积，CPU 型 HPA 也不会扩容：在 kind 集群上实测，两个 Pod 把队列从
+0 堆到 17309 个任务，CPU 却只用掉 2000m 限额里的 131m。而池自己的信号会扩容，
+并把积压消化掉。
+
+完整的操作步骤、Pod 侧要求和要避开的坑见
+[example/keda_example](example/keda_example/README_zh-CN.md)。
 
 ## 基准测试
 

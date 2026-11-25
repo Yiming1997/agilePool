@@ -180,6 +180,21 @@ type Pool struct {
 	// work yet, or the pool is idle.
 	scalerTarget atomic.Int64
 
+	// scalerDemand is the worker count the scaler computed before the worker
+	// capacity clamped it. The backlog clamp still applies: a worker runs one
+	// task at a time, so more workers than pending tasks is meaningless. The
+	// capacity clamp is the one that hides information, because a saturated
+	// pool reports the same target as a pool sitting exactly at its limit.
+	//
+	// An external autoscaler needs the unclamped value to know how far the
+	// pool wants to grow. Without it, a saturated pod can only report "I am
+	// at my ceiling", which is the same value for every pod that is full and
+	// hides how many more workers would actually be useful.
+	//
+	// Like scalerTarget, it is written only by the scaler goroutine and read
+	// atomically.
+	scalerDemand atomic.Int64
+
 	hooks        Hooks        // lifecycle callbacks registered via SetHook
 	panicHandler PanicHandler // custom task-panic handler (nil keeps default logging)
 }
@@ -743,6 +758,15 @@ func (p *Pool) scaleIfNeeded() {
 		target = totalBacklog
 	}
 
+	// The demand is the worker count before the capacity clamp. The backlog
+	// clamp above stays, because a worker processes one task at a time and
+	// more workers than pending tasks cannot help. The capacity clamp is the
+	// one that hides information: a saturated pool reports the same target as
+	// a pool sitting exactly at its limit. Publishing the demand before the
+	// clamp lets an external autoscaler see how much further the pool wants
+	// to grow.
+	p.scalerDemand.Store(target)
+
 	if target > p.capacity {
 		target = p.capacity
 	}
@@ -974,6 +998,28 @@ func (p *Pool) GetWorkerCreateCount() int64 {
 // default).
 func (p *Pool) GetScalerTarget() int64 {
 	return p.scalerTarget.Load()
+}
+
+// GetScalerDemand returns the number of workers the adaptive scaler would run
+// if the pool were allowed to exceed its worker capacity.
+//
+// Unlike GetScalerTarget, the value is not clamped to the capacity. It is
+// still clamped to the outstanding backlog, because a worker processes one
+// task at a time and more workers than pending tasks cannot help.
+//
+// A demand above GetCapacity means the pool wants more workers than it is
+// allowed to run. GetScalerTarget reports the same situation as the capacity
+// ceiling, so it cannot tell "just at the limit" apart from "far above the
+// limit". An external autoscaler that sums this value across pods and
+// divides it by a per-pod concurrency budget obtains the desired pod count
+// without the ceiling hiding part of the demand.
+//
+// The scaler writes the value from its own goroutine and the getter may be
+// called from any goroutine, so the read is atomic. The value is a snapshot:
+// it can change on the next tick, which happens every scalerPeriod (10ms by
+// default).
+func (p *Pool) GetScalerDemand() int64 {
+	return p.scalerDemand.Load()
 }
 
 // GetPendingTaskCount returns unfinished tasks, including queued tasks,
