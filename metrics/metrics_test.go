@@ -39,10 +39,10 @@ func TestWriteText(t *testing.T) {
 	if err := WriteText(&out, c); err != nil {
 		t.Fatal(err)
 	}
-	names := []string{"workers_running", "workers_idle", "workers_created_total", "tasks_submitted_total", "tasks_completed_total", "tasks_rejected_total", "tasks_queued", "task_queue_capacity", "worker_capacity", "tasks_pending"}
+	names := []string{"workers_running", "workers_target", "workers_idle", "workers_created_total", "tasks_submitted_total", "tasks_completed_total", "tasks_rejected_total", "tasks_queued", "task_queue_capacity", "worker_capacity", "tasks_pending"}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
-	if len(lines) != 30 || !strings.HasSuffix(out.String(), "\n") {
-		t.Fatalf("expected 30 newline-terminated lines, got %q", out.String())
+	if len(lines) != 33 || !strings.HasSuffix(out.String(), "\n") {
+		t.Fatalf("expected 33 newline-terminated lines, got %q", out.String())
 	}
 	for i, suffix := range names {
 		name := "agilepool_" + suffix
@@ -388,5 +388,79 @@ func BenchmarkWriteText(b *testing.B) {
 			}
 			b.StopTimer()
 		})
+	}
+}
+
+// TestWorkersTargetMatchesPool checks that the exposed workers_target gauge
+// reports the pool's own scaler decision, so a consumer of /metrics sees the
+// same value as a direct call to GetScalerTarget.
+func TestWorkersTargetMatchesPool(t *testing.T) {
+	p := agilepool.NewPool(agilepool.NewConfig(
+		agilepool.WithWorkerNumCapacity(64),
+		agilepool.WithTaskQueueSize(1024),
+	))
+	defer p.Close()
+	c := newTestCollector(t, p)
+
+	read := func() int64 {
+		var out bytes.Buffer
+		if err := WriteText(&out, c); err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(out.String(), "\n") {
+			if strings.HasPrefix(line, "agilepool_workers_target ") {
+				fields := strings.Fields(line)
+				if len(fields) != 2 {
+					t.Fatalf("malformed sample %q", line)
+				}
+				v, err := strconv.ParseInt(fields[1], 10, 64)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return v
+			}
+		}
+		t.Fatalf("workers_target not found in %q", out.String())
+		return 0
+	}
+
+	capacity := p.GetCapacity()
+
+	// An idle pool has a stable target of 0, so the exported value and the
+	// getter must agree exactly here.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p.GetScalerTarget() == 0 && read() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got, want := read(), p.GetScalerTarget(); got != want {
+		t.Fatalf("idle pool: exported target %d does not match GetScalerTarget() %d", got, want)
+	}
+
+	// Under load the target moves on every scaler tick, so the two readings
+	// are independent samples. Both must still be valid values of the same
+	// quantity: never negative and never above the configured ceiling.
+	blocking := make(chan struct{})
+	for i := 0; i < 32; i++ {
+		p.Submit(agilepool.NewTask(func() error {
+			<-blocking
+			return nil
+		}))
+	}
+	defer close(blocking)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		exported := read()
+		if exported < 0 || exported > capacity {
+			t.Fatalf("exported target %d is outside [0, %d]", exported, capacity)
+		}
+		direct := p.GetScalerTarget()
+		if direct < 0 || direct > capacity {
+			t.Fatalf("GetScalerTarget() = %d is outside [0, %d]", direct, capacity)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
