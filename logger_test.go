@@ -2,6 +2,8 @@ package agilepool_test
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"log"
 	"runtime"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"testing"
 
 	agilepool "github.com/Yiming1997/agilePool/v2"
+	"github.com/Yiming1997/agilePool/v2/hook"
+	"github.com/Yiming1997/agilePool/v2/hook/dynamic"
 )
 
 // countingLogger is a Logger that only counts writes, keeping the concurrent
@@ -110,5 +114,32 @@ func TestAgilePoolSetLoggerNilRestoresDefault(t *testing.T) {
 
 	if got := buf.String(); !strings.Contains(got, "worker exits from panic") {
 		t.Fatalf("standard logger did not receive the panic report; output = %q", got)
+	}
+}
+
+func TestHookPanicUsesCurrentStandardLogger(t *testing.T) {
+	previous := log.Writer()
+	t.Cleanup(func() { log.SetOutput(previous) })
+	log.SetOutput(io.Discard)
+
+	staticHooks := hook.NewHooks()
+	dynamicHooks := dynamic.NewHooks()
+	for _, tc := range []struct {
+		name     string
+		add      func(agilepool.TaskHook)
+		dispatch func(context.Context)
+	}{
+		{"static", staticHooks.AddTaskStarted, staticHooks.DispatchTaskStarted},
+		{"dynamic", dynamicHooks.AddTaskStarted, dynamicHooks.DispatchTaskStarted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output lockedBuffer
+			log.SetOutput(&output)
+			tc.add(func(context.Context) { panic("hook panic probe") })
+			tc.dispatch(context.Background())
+			if got := output.String(); !strings.Contains(got, "hook panic probe") {
+				t.Fatalf("standard logger did not receive the hook panic; output = %q", got)
+			}
+		})
 	}
 }

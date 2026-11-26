@@ -1,9 +1,11 @@
 package dynamic
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,7 +16,7 @@ import (
 
 func TestHooksDispatchesAllEvents(t *testing.T) {
 	hooks := NewHooks()
-	hooks.logger = *log.New(io.Discard, "", 0)
+	hooks.logger = log.New(io.Discard, "", 0)
 
 	var submitted, enqueued, rejected, started, completed, closed atomic.Int64
 	hooks.AddTaskSubmitted(func(context.Context) { submitted.Add(1) })
@@ -56,7 +58,7 @@ func TestHooksDispatchesAllEvents(t *testing.T) {
 
 func TestHooksRegistrationDuringDispatchAppliesToNextEvent(t *testing.T) {
 	hooks := NewHooks()
-	hooks.logger = *log.New(io.Discard, "", 0)
+	hooks.logger = log.New(io.Discard, "", 0)
 
 	var initialCalls, addedCalls atomic.Int64
 	hooks.AddTaskStarted(func(context.Context) {
@@ -85,7 +87,7 @@ func TestHooksRegistrationDuringDispatchAppliesToNextEvent(t *testing.T) {
 
 func TestHooksCallbackPanicDoesNotStopRemainingCallbacks(t *testing.T) {
 	hooks := NewHooks()
-	hooks.logger = *log.New(io.Discard, "", 0)
+	hooks.logger = log.New(io.Discard, "", 0)
 
 	var calls atomic.Int64
 	hooks.AddTaskCompleted(func(context.Context, any) { panic("boom") })
@@ -97,6 +99,19 @@ func TestHooksCallbackPanicDoesNotStopRemainingCallbacks(t *testing.T) {
 	hooks.DispatchTaskRejected(context.Background())
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("remaining callbacks = %d, want 2", got)
+	}
+}
+
+func TestDispatchPoolClosedNilPoolUsesStandardLogger(t *testing.T) {
+	previous := log.Writer()
+	t.Cleanup(func() { log.SetOutput(previous) })
+	var output bytes.Buffer
+	log.SetOutput(&output)
+
+	NewHooks().DispatchPoolClosed(nil)
+
+	if got := output.String(); !strings.Contains(got, "received nil pointer") {
+		t.Fatalf("standard logger did not receive the nil-pool report; output = %q", got)
 	}
 }
 
@@ -142,7 +157,7 @@ func TestRejectionContextThroughPool(t *testing.T) {
 
 func TestHooksCanRegisterWhilePoolRuns(t *testing.T) {
 	hooks := NewHooks()
-	hooks.logger = *log.New(io.Discard, "", 0)
+	hooks.logger = log.New(io.Discard, "", 0)
 
 	pool := agilepool.NewPool(agilepool.NewConfig())
 	pool.SetLogger(log.New(io.Discard, "", 0))
@@ -177,7 +192,7 @@ func TestHooksCanRegisterWhilePoolRuns(t *testing.T) {
 
 func TestHooksConcurrentRegistrationAndDispatch(t *testing.T) {
 	hooks := NewHooks()
-	hooks.logger = *log.New(io.Discard, "", 0)
+	hooks.logger = log.New(io.Discard, "", 0)
 
 	const (
 		registrars  = 4
