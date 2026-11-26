@@ -257,6 +257,62 @@ func TestTreap_AddAndPop_Sequence(t *testing.T) {
 	assertTreapPopsInOrder(t, tr, w4, w2, w5, w3)
 }
 
+// TestTreap_AddDoesNotAllocate checks that adding an element stays free of
+// heap allocations.
+//
+// The cut-off time used to be handed to split as a *time.Time. That pointer
+// does not escape - split only dereferences it - so the compiler keeps the
+// time on the stack and the treap is allocation-free today. The pointer was
+// still a trap: the day split stores or returns it, every Add starts
+// allocating a 24 byte time.Time on the hot path of a pool that parks a
+// worker on every task boundary. This test fails the moment that happens.
+func TestTreap_AddDoesNotAllocate(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	workers := make([]*testWorker, 64)
+	for i := range workers {
+		workers[i] = newTestWorker(now.Add(time.Duration(i) * time.Second))
+	}
+
+	tr := NewTreap[*testWorker]()
+	// Warm the node pool up so the first Get does not allocate a node.
+	for _, w := range workers {
+		tr.Add(w)
+	}
+	for range workers {
+		tr.Pop()
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		for _, w := range workers {
+			tr.Add(w)
+			tr.Pop()
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("Add allocated %v objects per run, want 0", allocs)
+	}
+}
+
+// BenchmarkTreapAdd measures the cost of one Add/Pop cycle, including the
+// allocations it makes.
+func BenchmarkTreapAdd(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0)
+	workers := make([]*testWorker, 64)
+	for i := range workers {
+		workers[i] = newTestWorker(now.Add(time.Duration(i) * time.Second))
+	}
+
+	tr := NewTreap[*testWorker]()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, w := range workers {
+			tr.Add(w)
+			tr.Pop()
+		}
+	}
+}
+
 func assertTreapPopsOnly(t *testing.T, tr *Treap[*testWorker], wants ...*testWorker) {
 	t.Helper()
 

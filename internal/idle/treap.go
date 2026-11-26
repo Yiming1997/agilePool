@@ -36,12 +36,15 @@ func NewTreap[T Dated]() *Treap[T] {
 	}
 }
 
-func (t *Treap[T]) split(u *treapNode[T], k *time.Time) (left, right *treapNode[T]) {
+// split splits the treap into the elements that are not after k (left) and
+// the ones that are (right). The cut-off is passed by value: a pointer would
+// make every caller heap-allocate the time it passes in.
+func (t *Treap[T]) split(u *treapNode[T], k time.Time) (left, right *treapNode[T]) {
 	if u == nil {
 		return
 	}
 
-	if u.value.DatedTime().After(*k) {
+	if u.value.DatedTime().After(k) {
 		left, u.left = t.split(u.left, k)
 		right = u
 		return
@@ -90,7 +93,7 @@ func (t *Treap[T]) Add(work T) {
 	node.value = work
 	node.priority = rand.Int()
 
-	left, right := t.split(t.root, t.keyOf(work))
+	left, right := t.split(t.root, work.DatedTime())
 	t.root = t.merge(left, t.merge(node, right))
 	atomic.AddInt64(&t.size, 1)
 }
@@ -144,7 +147,7 @@ func (t *Treap[T]) RemoveExpired(now time.Time, expiry time.Duration) int {
 	removeTime := now.Add(-expiry)
 
 	var leftTree *treapNode[T]
-	leftTree, t.root = t.split(t.root, &removeTime)
+	leftTree, t.root = t.split(t.root, removeTime)
 
 	t.removeTree(leftTree)
 	return int(oriCount - atomic.LoadInt64(&t.size))
@@ -153,9 +156,4 @@ func (t *Treap[T]) RemoveExpired(now time.Time, expiry time.Duration) int {
 // Len returns the number of elements in the treap.
 func (t *Treap[T]) Len() int64 {
 	return atomic.LoadInt64(&t.size)
-}
-
-func (t *Treap[T]) keyOf(v T) *time.Time {
-	ts := v.DatedTime()
-	return &ts
 }
