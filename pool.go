@@ -207,6 +207,10 @@ type Pool struct {
 	// Like scalerTarget, it is written only by the scaler goroutine and read
 	// atomically.
 	scalerDemand atomic.Int64
+	// blockedSubmitters counts the submitters currently waiting for room in the
+	// handoff queue. It is the only signal that the pool is saturated when the
+	// queue is too short to hold a backlog.
+	blockedSubmitters atomic.Int64
 
 	hooks        Hooks        // lifecycle callbacks registered via SetHook
 	panicHandler PanicHandler // custom task-panic handler (nil keeps default logging)
@@ -442,15 +446,22 @@ func (p *Pool) submit(ctx context.Context, task Task, block bool) bool {
 			return false
 		}
 		q = p.nextShard()
+		// Announce that a submitter is waiting: with a short queue this is the
+		// only evidence the scaler has that work is being offered faster than
+		// the pool accepts it. See littleLawBump.
+		p.blockedSubmitters.Add(1)
 		select {
 		case q <- task:
+			p.blockedSubmitters.Add(-1)
 			p.dispatchTaskEnqueuedFor(task)
 			return true
 		case <-ctx.Done():
+			p.blockedSubmitters.Add(-1)
 			p.done()
 			p.dispatchTaskRejectedFor(ctx, task)
 			return false
 		case <-p.closePoolCn:
+			p.blockedSubmitters.Add(-1)
 			p.done()
 			p.dispatchTaskRejectedFor(ctx, task)
 			return false
@@ -714,15 +725,12 @@ func (p *Pool) littleLawTarget(submitMed float64, serviceTime time.Duration, run
 	return target
 }
 
-// littleLawBump returns how many extra workers to ask for while the pool is
-// saturated. It is a fraction of the current size so that an autoscaler climbs
-// toward the right replica count in a few steps, instead of provisioning enough
-// workers to clear the entire backlog at once (which is what the backlog target
-// does and why it overshoots by 4-5x).
-//
-// Saturation here means "at the worker cap with work waiting": the pool is
-// provably unable to keep up, which Little's law alone cannot observe because
-// the arrival rate it measures stops at the rate it accepts.
+// littleLawBump returns how many extra workers to ask for while the pool sits
+// at its worker cap with work waiting. Little's law alone cannot see that: with
+// backpressure the pool only measures the arrival rate it accepts, so a
+// saturated pod and a correctly sized one report the same target. The bump is a
+// fraction of the current size so the pool climbs in a few ticks instead of
+// demanding enough workers to clear a backlog it cannot even see.
 func (p *Pool) littleLawBump(running int64) int64 {
 	return p.littleLawBumpFor(running, p.queuedTasks())
 }
@@ -732,13 +740,40 @@ func (p *Pool) littleLawBumpFor(running, queued int64) int64 {
 	if running < p.capacity || queued <= 0 {
 		return 0
 	}
-	bump := running / 2
-	if bump < 1 {
-		bump = 1
-	}
-	return bump
+	return p.growthStep(running, 1)
 }
 
+// blockedFloor is the saturation signal that does not depend on the queue being
+// deep enough to hold a backlog: a submitter waiting for room means tasks are
+// being offered faster than the pool accepts them right now.
+//
+// A short queue hides the backlog from every other signal. The queue fills
+// immediately, producers block, and the accepted rate stays at whatever the
+// current worker count supports, so the scaler sees a small arrival rate and a
+// small queue and settles: measured with a 100-slot queue, a 30k-worker pool sat
+// at ~600 workers and 55k tasks/s while the same pool reached 2.1M tasks/s with
+// a 20k queue. Every blocked submitter is holding a task the pool has no room
+// for, so asking for at least that many more workers is justified.
+func (p *Pool) blockedFloor(running int64) int64 {
+	blocked := p.blockedSubmitters.Load()
+	if blocked <= 0 {
+		return 0
+	}
+	return running + p.growthStep(running, blocked)
+}
+
+// growthStep is how many workers to add: half the current size, or one per
+// blocked submitter, whichever is larger, and at least one.
+func (p *Pool) growthStep(running, blocked int64) int64 {
+	step := running / 2
+	if blocked > step {
+		step = blocked
+	}
+	if step < 1 {
+		step = 1
+	}
+	return step
+}
 func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
 	running := atomic.LoadInt64(&p.runningWorkersNum)
@@ -874,6 +909,16 @@ func (p *Pool) scaleIfNeeded() {
 				target = running + bump
 			}
 		}
+	}
+
+	// A submitter blocked on the handoff queue means the pool is refusing work
+	// right now, whatever the queue is long enough to show. This applies to both
+	// scaling modes: with a short queue the backlog never grows large enough for
+	// the rate or drain targets to see it, so without this floor the pool settles
+	// at whatever its current worker count supports (measured: a 100-slot queue
+	// held a 30k-worker pool at ~600 workers and 55k tasks/s).
+	if floor := p.blockedFloor(running); floor > target {
+		target = floor
 	}
 
 	// A pool never needs more workers than there are pending tasks: a worker
