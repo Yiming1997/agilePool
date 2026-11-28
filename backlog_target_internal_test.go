@@ -25,7 +25,7 @@ func TestBacklogWeightedTargetUsesWaitingTasksOnly(t *testing.T) {
 		runningAvg = 10000.0
 	)
 	// Waiting work only.
-	withWaiting := p.backlogWeightedTarget(submitMed, consumeMed, runningAvg, 2000, 0)
+	withWaiting := p.backlogWeightedTarget(submitMed, consumeMed, runningAvg, 2000, 0, 0)
 	// The old formula used the whole backlog (10k running + 2k waiting).
 	oldFormula := int64((submitMed + 0.3*float64(12000)) * runningAvg / consumeMed)
 
@@ -58,8 +58,8 @@ func TestBacklogWeightedTargetMeasuresPressureFromTheActiveStagingArea(t *testin
 	// Under strict backpressure the buffer is never written, so the queue depth
 	// must drive the pressure: a deep queue lifts the decay even though bufDepth
 	// is 0 in both cases.
-	strictShallow := strict.backlogWeightedTarget(submitMed, consumeMed, runningAvg, waiting, 0)
-	strictDeep := strict.backlogWeightedTarget(submitMed, consumeMed, runningAvg, 50*waiting, 0)
+	strictShallow := strict.backlogWeightedTarget(submitMed, consumeMed, runningAvg, waiting, 0, 0)
+	strictDeep := strict.backlogWeightedTarget(submitMed, consumeMed, runningAvg, 50*waiting, 0, 0)
 	if strictDeep <= strictShallow {
 		t.Fatalf("strict: deep queue target %d should exceed shallow %d", strictDeep, strictShallow)
 	}
@@ -67,8 +67,8 @@ func TestBacklogWeightedTargetMeasuresPressureFromTheActiveStagingArea(t *testin
 	// With the overflow buffer the pressure comes from the buffer instead: the
 	// same waiting work is discounted when the buffer is empty and counted in
 	// full when the buffer is deep.
-	bufEmpty := buffered.backlogWeightedTarget(submitMed, consumeMed, runningAvg, waiting, 0)
-	bufDeep := buffered.backlogWeightedTarget(submitMed, consumeMed, runningAvg, waiting, 50*int64(waiting))
+	bufEmpty := buffered.backlogWeightedTarget(submitMed, consumeMed, runningAvg, waiting, 0, 0)
+	bufDeep := buffered.backlogWeightedTarget(submitMed, consumeMed, runningAvg, waiting, 50*int64(waiting), 0)
 	if bufDeep <= bufEmpty {
 		t.Fatalf("buffered: buf pressure %d should exceed buffer-empty %d", bufDeep, bufEmpty)
 	}
@@ -86,7 +86,7 @@ func TestBacklogWeightedTargetWithNoPressure(t *testing.T) {
 	p := NewPool(NewConfig(WithWorkerNumCapacity(30000), WithBacklogDecayFactor(0.3)))
 	defer p.Close()
 
-	got := p.backlogWeightedTarget(2000, 2000, 100, 0, 0)
+	got := p.backlogWeightedTarget(2000, 2000, 100, 0, 0, 0)
 	// (2000 + 0) * 100 / 2000 = 100
 	if got != 100 {
 		t.Fatalf("target = %d, want 100", got)
@@ -106,7 +106,7 @@ func TestBacklogWeightedTargetIgnoresMissingMeasurements(t *testing.T) {
 		{"no workers", 100, 100, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := p.backlogWeightedTarget(c.submit, c.consume, c.pool, 100, 0); got != 0 {
+			if got := p.backlogWeightedTarget(c.submit, c.consume, c.pool, 100, 0, 0); got != 0 {
 				t.Fatalf("target = %d, want 0", got)
 			}
 		})
@@ -121,8 +121,8 @@ func TestBacklogDecayRisesWithPressure(t *testing.T) {
 	_ = testWindow
 
 	// 1 window of waiting work -> slight lift; 10 windows -> saturates at 1.0.
-	one := p.backlogWeightedTarget(0, 1000, 100, 1000, 0)
-	ten := p.backlogWeightedTarget(0, 1000, 100, 10000, 0)
+	one := p.backlogWeightedTarget(0, 1000, 100, 1000, 0, 0)
+	ten := p.backlogWeightedTarget(0, 1000, 100, 10000, 0, 0)
 	if ten <= one {
 		t.Fatalf("10 windows of work (%d) should exceed 1 window (%d)", ten, one)
 	}
@@ -140,10 +140,49 @@ func TestBacklogWeightedTargetStateless(t *testing.T) {
 	b := NewPool(NewConfig(WithWorkerNumCapacity(30000), WithBacklogDecayFactor(0.3)))
 	defer b.Close()
 
-	x := a.backlogWeightedTarget(500, 400, 50, 300, 0)
-	y := b.backlogWeightedTarget(500, 400, 50, 300, 0)
+	x := a.backlogWeightedTarget(500, 400, 50, 300, 0, 0)
+	y := b.backlogWeightedTarget(500, 400, 50, 300, 0, 0)
 	if x != y {
 		t.Fatalf("targets differ between pools: %d vs %d", x, y)
 	}
 	_ = time.Now
+}
+
+// TestBacklogPressureSaturatesOnBlockedSubmitters covers the short-queue case:
+// the staging area is capped by its capacity, so a small queue can never look
+// "several windows deep" however far behind the pool is. A waiting submitter is
+// the evidence that does not depend on the queue size.
+func TestBacklogPressureSaturatesOnBlockedSubmitters(t *testing.T) {
+	p := NewPool(NewConfig(WithWorkerNumCapacity(30000), WithTaskQueueSize(100), WithBacklogDecayFactor(0.3)))
+	defer p.Close()
+
+	// 100 waiting tasks against 2000 completions per window: 0.05 windows of
+	// work, i.e. the floor decay of 0.3.
+	const (
+		submitMed  = 2000.0
+		consumeMed = 2000.0
+		runningAvg = 100.0
+	)
+	noBlocked := p.backlogWeightedTarget(submitMed, consumeMed, runningAvg, 100, 0, 0)
+	// One blocked submitter proves the pool cannot accept work at all, so the
+	// pressure -- and with it the decay -- goes to its ceiling.
+	oneBlocked := p.backlogWeightedTarget(submitMed, consumeMed, runningAvg, 100, 0, 1)
+
+	if oneBlocked <= noBlocked {
+		t.Fatalf("blocked submitter did not raise the target: %d vs %d", oneBlocked, noBlocked)
+	}
+	// Floor: (2000 + 100*0.3) * 100/2000 = 101.
+	if noBlocked != 101 {
+		t.Fatalf("target with no blocked submitter = %d, want 101", noBlocked)
+	}
+	// Ceiling: (2000 + 100*1.0) * 100/2000 = 105.
+	if oneBlocked != 105 {
+		t.Fatalf("target with a blocked submitter = %d, want 105", oneBlocked)
+	}
+	// The blocked tasks themselves also count as waiting work.
+	manyBlocked := p.backlogWeightedTarget(submitMed, consumeMed, runningAvg, 100, 0, 400)
+	// (2000 + 500*1.0) * 100/2000 = 125.
+	if manyBlocked != 125 {
+		t.Fatalf("target with 400 blocked submitters = %d, want 125", manyBlocked)
+	}
 }

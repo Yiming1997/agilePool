@@ -783,19 +783,25 @@ func (p *Pool) growthStep(running, blocked int64) int64 {
 // windows' worth of work relative to the drain rate, so a pool that is falling
 // behind asks for more than one that is merely busy.
 //
-// Two details matter:
+// Three details matter:
 //
 //   - Pressure is measured from wherever the backlog actually waits. With the
 //     overflow buffer (WithOverflowBuffer) that is the chunked buffer; with the
 //     default backpressure the buffer is never written, so a buffer-only
 //     measurement is always zero and the decay would sit at its floor forever.
 //     Use the handoff queue in that case.
+//   - A blocked submitter saturates the pressure. The staging area is capped by
+//     its capacity, so a short queue can never look "several windows deep" no
+//     matter how far behind the pool is (a 100-slot queue with 2000 completions
+//     per window reports 0.05 windows of work). A submitter waiting for room is
+//     the strongest evidence available and does not depend on the queue size.
 //   - Only the tasks waiting count as extra arrivals. The outstanding backlog
 //     also holds the tasks already executing, and those are accounted for by the
 //     worker count: adding them again inflates the target by up to 1.5x the
 //     backlog for slow tasks, because each waiting task maps to
-//     decay x serviceTime / window extra workers.
-func (p *Pool) backlogWeightedTarget(submitMed, consumeMed, runningAvg float64, queued, bufDepth int64) int64 {
+//     decay x serviceTime / window extra workers. Every blocked submitter holds
+//     one waiting task, so they are added to the waiting count.
+func (p *Pool) backlogWeightedTarget(submitMed, consumeMed, runningAvg float64, queued, bufDepth, blocked int64) int64 {
 	if consumeMed <= 0 || runningAvg <= 0 {
 		return 0
 	}
@@ -805,8 +811,12 @@ func (p *Pool) backlogWeightedTarget(submitMed, consumeMed, runningAvg float64, 
 	}
 	cycles := float64(staging) / consumeMed
 	pressure := min(1.0, cycles*0.15)
+	if blocked > 0 {
+		pressure = 1.0
+	}
 	decay := p.config.backlogDecayFactor + (1-p.config.backlogDecayFactor)*pressure
-	return int64((submitMed + float64(queued)*decay) * runningAvg / consumeMed)
+	waiting := queued + blocked
+	return int64((submitMed + float64(waiting)*decay) * runningAvg / consumeMed)
 }
 func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
@@ -863,7 +873,7 @@ func (p *Pool) scaleIfNeeded() {
 			// Cold start: spawn enough to drain the backlog (up to capacity).
 			target = totalBacklog
 		case consumeMed > 0:
-			qTarget := p.backlogWeightedTarget(submitMed, consumeMed, runningAvg, queued, bufDepth)
+			qTarget := p.backlogWeightedTarget(submitMed, consumeMed, runningAvg, queued, bufDepth, p.blockedSubmitters.Load())
 			if qTarget > target {
 				target = qTarget
 			}
