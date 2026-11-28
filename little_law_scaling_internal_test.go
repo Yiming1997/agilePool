@@ -112,8 +112,8 @@ func TestLittleLawScalingKeepsUpWithSteadyLoad(t *testing.T) {
 	}
 }
 
-// TestLittleLawBumpOnlyWhenSaturated pins the second half of the hybrid: the
-// multiplicative bump applies only while the pool is at its worker cap with
+// TestLittleLawBumpOnlyWhenSaturated pins the Little's law half of the hybrid:
+// the multiplicative bump applies only while the pool is at its worker cap with
 // work waiting, which is the state Little's law alone cannot distinguish from a
 // correctly sized pool.
 func TestLittleLawBumpOnlyWhenSaturated(t *testing.T) {
@@ -136,8 +136,53 @@ func TestLittleLawBumpOnlyWhenSaturated(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := p.littleLawBumpFor(c.running, c.queued); got != c.want {
-				t.Fatalf("bump(%d, %d) = %d, want %d", c.running, c.queued, got, c.want)
+				t.Fatalf("bump(running=%d, queued=%d) = %d, want %d",
+					c.running, c.queued, got, c.want)
 			}
 		})
+	}
+}
+
+// TestGrowthStep pins the multiplicative climb shared by the Little's law bump
+// and the blocked-submitter floor.
+func TestGrowthStep(t *testing.T) {
+	p := NewPool(NewConfig(WithWorkerNumCapacity(100)))
+	defer p.Close()
+
+	cases := []struct {
+		name             string
+		running, blocked int64
+		want             int64
+	}{
+		{"half the current size", 100, 0, 50},
+		{"blocked submitters dominate", 100, 500, 500},
+		{"always at least one", 1, 0, 1},
+		{"zero running", 0, 0, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := p.growthStep(c.running, c.blocked); got != c.want {
+				t.Fatalf("growthStep(%d, %d) = %d, want %d", c.running, c.blocked, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBlockedFloorOnlyWithBlockedSubmitters checks the small-queue signal: the
+// floor applies only while a submitter is actually waiting for room.
+func TestBlockedFloorOnlyWithBlockedSubmitters(t *testing.T) {
+	p := NewPool(NewConfig(WithWorkerNumCapacity(30000), WithTaskQueueSize(10)))
+	defer p.Close()
+
+	if got := p.blockedFloor(500); got != 0 {
+		t.Fatalf("blockedFloor without blocked submitters = %d, want 0", got)
+	}
+	p.blockedSubmitters.Store(4)
+	if got := p.blockedFloor(500); got != 750 {
+		t.Fatalf("blockedFloor with 4 blocked = %d, want 750", got)
+	}
+	p.blockedSubmitters.Store(900)
+	if got := p.blockedFloor(500); got != 1400 {
+		t.Fatalf("blockedFloor with 900 blocked = %d, want 1400", got)
 	}
 }
