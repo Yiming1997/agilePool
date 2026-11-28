@@ -714,6 +714,31 @@ func (p *Pool) littleLawTarget(submitMed float64, serviceTime time.Duration, run
 	return target
 }
 
+// littleLawBump returns how many extra workers to ask for while the pool is
+// saturated. It is a fraction of the current size so that an autoscaler climbs
+// toward the right replica count in a few steps, instead of provisioning enough
+// workers to clear the entire backlog at once (which is what the backlog target
+// does and why it overshoots by 4-5x).
+//
+// Saturation here means "at the worker cap with work waiting": the pool is
+// provably unable to keep up, which Little's law alone cannot observe because
+// the arrival rate it measures stops at the rate it accepts.
+func (p *Pool) littleLawBump(running int64) int64 {
+	return p.littleLawBumpFor(running, p.queuedTasks())
+}
+
+// littleLawBumpFor is the pure form of littleLawBump, exposed for tests.
+func (p *Pool) littleLawBumpFor(running, queued int64) int64 {
+	if running < p.capacity || queued <= 0 {
+		return 0
+	}
+	bump := running / 2
+	if bump < 1 {
+		bump = 1
+	}
+	return bump
+}
+
 func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
 	running := atomic.LoadInt64(&p.runningWorkersNum)
@@ -835,6 +860,20 @@ func (p *Pool) scaleIfNeeded() {
 	// neither the queue depth nor the worker count, so it cannot feed back.
 	if p.config.scalingMode == ScalingLittleLaw {
 		target = p.littleLawTarget(submitMed, serviceTime, running, totalBacklog)
+
+		// Little's law sizes the pool but cannot start a scale-out: a pod that is
+		// saturated reports the same target as one that is exactly right, because
+		// the arrival rate it can measure is only the share it accepts. Add a
+		// multiplicative bump while the pod is at capacity with work waiting, so
+		// an autoscaler that divides the demand by a per-pod budget keeps adding
+		// capacity until the queues drain. The bump is a fraction of the current
+		// size, not the queue depth, so it converges in a few steps instead of
+		// jumping to "enough workers to clear the whole backlog".
+		if bump := p.littleLawBump(running); bump > 0 {
+			if target < running+bump {
+				target = running + bump
+			}
+		}
 	}
 
 	// A pool never needs more workers than there are pending tasks: a worker

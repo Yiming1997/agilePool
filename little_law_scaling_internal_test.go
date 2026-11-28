@@ -111,3 +111,33 @@ func TestLittleLawScalingKeepsUpWithSteadyLoad(t *testing.T) {
 		t.Fatalf("running workers = %d, want well under the 2000 capacity", got)
 	}
 }
+
+// TestLittleLawBumpOnlyWhenSaturated pins the second half of the hybrid: the
+// multiplicative bump applies only while the pool is at its worker cap with
+// work waiting, which is the state Little's law alone cannot distinguish from a
+// correctly sized pool.
+func TestLittleLawBumpOnlyWhenSaturated(t *testing.T) {
+	p := NewPool(NewConfig(
+		WithLittleLawScaling(),
+		WithWorkerNumCapacity(100),
+	))
+	defer p.Close()
+
+	cases := []struct {
+		name            string
+		running, queued int64
+		want            int64
+	}{
+		{"below capacity", 50, 1000, 0},
+		{"at capacity, empty queue", 100, 0, 0},
+		{"at capacity with work waiting", 100, 50, 50},
+		{"minimum bump of one", 1, 10, 0}, // running 1 < capacity 100
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := p.littleLawBumpFor(c.running, c.queued); got != c.want {
+				t.Fatalf("bump(%d, %d) = %d, want %d", c.running, c.queued, got, c.want)
+			}
+		})
+	}
+}
