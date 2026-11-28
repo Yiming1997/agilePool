@@ -210,6 +210,26 @@ per-pod concurrency budget obtains the desired pod count. The budget must stay b
 `GetCapacity()`, otherwise the summed value can never exceed the number of running pods and the
 workload never scales out.
 
+**If the demand feeds an autoscaler, enable Little's law sizing.** The default `ScalingBacklog`
+target grows with the queue depth, and the queue depth grows when the pool is undersized, so a
+single saturated pod reports a demand proportional to its own backlog: an autoscaler dividing that
+by a per-pod budget provisions far more pods than the arrival rate needs (measured: 16 pods for a
+load Little's law sizes at 3). `WithLittleLawScaling()` reports `arrivalRate × serviceTime` plus a
+saturation bump instead, so the same budget yields the right replica count:
+
+```go
+pool := agilepool.NewPool(agilepool.NewConfig(
+    agilepool.WithWorkerNumCapacity(1000),
+    agilepool.WithLittleLawScaling(), // required when the demand drives replicas
+))
+```
+
+The bump deliberately lets the reported demand exceed the worker capacity while the pod is at its
+ceiling with work queued (`running + running/2`). That is what lets the autoscaler climb: without
+it a saturated pod and a correctly sized pod report the same demand, because with backpressure the
+pool only measures the arrival rate it accepts.
+
+
 ### Logger and PanicHandler
 
 ```go
