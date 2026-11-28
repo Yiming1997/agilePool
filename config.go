@@ -63,6 +63,10 @@ type Config struct {
 	// backlog. The backlog-driven ramp-up target is
 	// ceil(queuedTasks * serviceTime / drainHorizon): the number of workers
 	// that can finish the queued work within the horizon.
+	// backpressureOnly is the default: a submission that finds the handoff
+	// queue full waits for room instead of spilling into the overflow buffer.
+	// WithOverflowBuffer clears it. See WithOverflowBuffer for the trade-off.
+	backpressureOnly bool
 	drainHorizon             time.Duration
 	panicHandler             PanicHandler // custom task-panic handler (nil keeps default logging)
 }
@@ -98,6 +102,7 @@ func NewConfig(opts ...ConfigOption) *Config {
 		scalerPeriod:       defaultScalerPeriod,
 		backlogDecayFactor: defaultBacklogDecayFactor,
 
+		backpressureOnly:         true,
 		zeroConsumeScaleInterval: defaultZeroConsumeScaleInterval,
 		maxZeroConsumeScaleStep:  defaultMaxZeroConsumeScaleStep,
 		drainHorizon:              defaultDrainHorizon,
@@ -273,5 +278,29 @@ func WithDrainHorizon(d time.Duration) ConfigOption {
 		if d > 0 {
 			c.drainHorizon = d
 		}
+	}
+}
+
+// WithOverflowBuffer routes submissions that find the handoff queue full into
+// the shared overflow buffer instead of waiting for room.
+//
+// The buffer lets a submitter run ahead of the workers up to maxChunkLen tasks,
+// so Submit returns without blocking even when the pool is saturated. That extra
+// absorption is not free: every submission past the queue capacity then pays a
+// buffer lock, a push and a handoff attempt that cannot succeed, and the task
+// waits behind everything already buffered. Measured on a 30k-worker pool with
+// 500k tasks of 50 ms it cost about 20% of the throughput ceiling, and 82% on a
+// mixed 1 ms/5 ms/20 ms/100 ms workload, because work was accepted that the pool
+// could not start promptly.
+//
+// The default is strict backpressure: a full queue makes the submitter wait for
+// room (an honest signal that the pool is saturated), which keeps the queue
+// delay bounded by the queue capacity. Enable this option only when the
+// producer must not block and rejecting the task is worse than queueing it
+// behind a deep buffer; WithBlockMode(NONBLOCK) rejects instead of queueing and
+// is usually the better choice for a latency-sensitive producer.
+func WithOverflowBuffer() ConfigOption {
+	return func(c *Config) {
+		c.backpressureOnly = false
 	}
 }

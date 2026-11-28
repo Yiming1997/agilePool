@@ -40,7 +40,7 @@ func checkHookMetrics(t *testing.T, p *Pool, h *rejectionObserver, accepted, com
 
 func blockedObservedPool(t *testing.T, mode WorkMode, h Hooks) (*Pool, func()) {
 	t.Helper()
-	p := NewPool(NewConfig(WithWorkerNumCapacity(1), WithTaskQueueSize(1), WithTaskQueueShards(1), WithBlockMode(mode)))
+	p := NewPool(NewConfig(WithWorkerNumCapacity(1), WithTaskQueueSize(1), WithTaskQueueShards(1), WithBlockMode(mode), WithOverflowBuffer()))
 	if err := p.SetHook(h); err != nil {
 		t.Fatal(err)
 	}
@@ -63,16 +63,21 @@ func TestHookAccountingUsesExistingAcceptedAndCompletedEvents(t *testing.T) {
 	checkHookMetrics(t, p, h, 1, 0, 0, 1, 0)
 	p.sampleRates()
 	checkHookMetrics(t, p, h, 1, 0, 0, 1, 0)
-	p.Submit(NewTask(func() error { panic("test panic") }))
+
+	// The pool has one blocked worker and a one-slot queue, so a second task is
+	// the most that can be in flight: BLOCK mode no longer spills into the
+	// overflow buffer. Use that slot for a task whose context is cancelled
+	// before it runs, which must still be accounted as accepted and completed
+	// (the task body is skipped by contextTask).
 	ctx, cancel := context.WithCancel(context.Background())
 	p.SubmitCtx(ctx, NewTask(func() error { t.Error("cancelled task executed"); return nil }))
 	cancel()
-	checkHookMetrics(t, p, h, 3, 0, 0, 3, 2)
+	checkHookMetrics(t, p, h, 2, 0, 0, 2, 1)
 	unblock()
 	p.Wait()
-	checkHookMetrics(t, p, h, 3, 3, 0, 0, 0)
+	checkHookMetrics(t, p, h, 2, 2, 0, 0, 0)
 	p.sampleRates()
-	checkHookMetrics(t, p, h, 3, 3, 0, 0, 0)
+	checkHookMetrics(t, p, h, 2, 2, 0, 0, 0)
 }
 
 func TestRejectedHookIgnoresNilAndReportsEveryRefusedNonNilTask(t *testing.T) {
@@ -141,7 +146,7 @@ func TestRejectedHookSaturatedBufferWait(t *testing.T) {
 			defer cancel()
 			ctx := &admissionWaitContext{Context: underlying, waiting: make(chan struct{})}
 			returned := make(chan bool, 1)
-			go func() { returned <- p.submit(ctx, noop) }()
+			go func() { returned <- p.submit(ctx, noop, false) }()
 			select {
 			case <-ctx.waiting:
 			case <-time.After(5 * time.Second):

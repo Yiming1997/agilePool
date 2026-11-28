@@ -52,16 +52,19 @@ func (w *worker) run(task Task) {
 
 		// Fall back to the chunked overflow buffer, grabbing a batch per lock
 		// acquisition to amortise the mutex overhead and reduce contention
-		// with the submission path.
-		const batchSize = 8
-		var batch [batchSize]Task
-		n := w.pool.taskBuf.PopBatch(batch[:])
-		if n > 0 {
-			for i := 0; i < n; i++ {
-				w.lastActiveAt = time.Now()
-				w.runTask(batch[i])
+		// with the submission path. With strict backpressure nothing is ever
+		// pushed into that buffer, so skip the lock entirely.
+		if !w.pool.config.backpressureOnly {
+			const batchSize = 8
+			var batch [batchSize]Task
+			n := w.pool.taskBuf.PopBatch(batch[:])
+			if n > 0 {
+				for i := 0; i < n; i++ {
+					w.lastActiveAt = time.Now()
+					w.runTask(batch[i])
+				}
+				continue
 			}
-			continue
 		}
 
 		// Park: both the shards and the overflow buffer are empty. Decrement

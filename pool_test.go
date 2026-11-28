@@ -206,6 +206,9 @@ func TestAgilePoolSubmissionDeadlinesAtBackpressureLimit(t *testing.T) {
 	agilePool := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithWorkerNumCapacity(1),
 		agilepool.WithTaskQueueSize(1),
+		// This test fills the overflow buffer to reach the backpressure limit;
+		// the default configuration applies strict backpressure instead.
+		agilepool.WithOverflowBuffer(),
 	))
 
 	started := make(chan struct{})
