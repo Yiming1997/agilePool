@@ -19,7 +19,7 @@ func BenchmarkAgilePoolMinHeap(b *testing.B) {
 
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(50000),
 			agilepool.WithIdleContainerType(agilepool.MinHeapType),
 		))
@@ -43,7 +43,7 @@ func BenchmarkAgilePoolLinkedList(b *testing.B) {
 		// 20k worker capacity gives the best performance
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(50000),
 			agilepool.WithIdleContainerType(agilepool.LinkedListType),
 		))
@@ -67,7 +67,7 @@ func BenchmarkAgilePoolRingQueue(b *testing.B) {
 		// 20k worker capacity gives the best performance
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(50000),
 			agilepool.WithIdleContainerType(agilepool.RingQueueType),
 		))
@@ -90,7 +90,7 @@ func BenchmarkAgilePoolTreap(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(50000),
 			agilepool.WithIdleContainerType(agilepool.TreapType),
 		))
@@ -111,7 +111,7 @@ func BenchmarkAgilePoolTreap(b *testing.B) {
 func BenchmarkAgilePoolRunParallelMinHeap(b *testing.B) {
 	pool := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithCleanPeriod(500*time.Millisecond),
-		agilepool.WithTaskQueueSize(10000),
+		agilepool.WithTaskQueueSize(20000),
 		agilepool.WithWorkerNumCapacity(50000),
 		agilepool.WithIdleContainerType(agilepool.MinHeapType),
 	))
@@ -132,7 +132,7 @@ func BenchmarkAgilePoolRunParallelMinHeap(b *testing.B) {
 func BenchmarkAgilePoolRunParallelLinkedList(b *testing.B) {
 	pool := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithCleanPeriod(500*time.Millisecond),
-		agilepool.WithTaskQueueSize(10000),
+		agilepool.WithTaskQueueSize(20000),
 		agilepool.WithWorkerNumCapacity(50000),
 		agilepool.WithIdleContainerType(agilepool.LinkedListType),
 	))
@@ -153,7 +153,7 @@ func BenchmarkAgilePoolRunParallelLinkedList(b *testing.B) {
 func BenchmarkAgilePoolRunParallelRingQueue(b *testing.B) {
 	pool := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithCleanPeriod(500*time.Millisecond),
-		agilepool.WithTaskQueueSize(10000),
+		agilepool.WithTaskQueueSize(20000),
 		agilepool.WithWorkerNumCapacity(50000),
 		agilepool.WithIdleContainerType(agilepool.RingQueueType),
 	))
@@ -174,7 +174,7 @@ func BenchmarkAgilePoolRunParallelRingQueue(b *testing.B) {
 func BenchmarkAgilePoolRunParallelSlice(b *testing.B) {
 	pool := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithCleanPeriod(500*time.Millisecond),
-		agilepool.WithTaskQueueSize(10000),
+		agilepool.WithTaskQueueSize(20000),
 		agilepool.WithWorkerNumCapacity(50000),
 		agilepool.WithIdleContainerType(agilepool.SliceType),
 	))
@@ -195,7 +195,7 @@ func BenchmarkAgilePoolRunParallelSlice(b *testing.B) {
 func BenchmarkAgilePoolRunParallelTreap(b *testing.B) {
 	pool := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithCleanPeriod(500*time.Millisecond),
-		agilepool.WithTaskQueueSize(10000),
+		agilepool.WithTaskQueueSize(20000),
 		agilepool.WithWorkerNumCapacity(50000),
 		agilepool.WithIdleContainerType(agilepool.TreapType),
 	))
@@ -218,7 +218,7 @@ func BenchmarkAgilePoolSequentialMinHeap(b *testing.B) {
 		// 20k worker capacity gives the best performance
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.MinHeapType),
 		))
@@ -239,7 +239,7 @@ func BenchmarkAgilePoolSequentialLinkedList(b *testing.B) {
 		// 20k worker capacity gives the best performance
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(100000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.LinkedListType),
 		))
@@ -259,7 +259,7 @@ func BenchmarkAgilePoolSequentialRingQueue(b *testing.B) {
 		// 20k worker capacity gives the best performance
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(100000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.RingQueueType),
 		))
@@ -279,7 +279,7 @@ func BenchmarkAgilePoolSequentialSlice(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.SliceType),
 		))
@@ -299,7 +299,7 @@ func BenchmarkAgilePoolSequentialTreap(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.TreapType),
 		))
@@ -378,7 +378,7 @@ func BenchmarkAgilePoolBurstMinHeap(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.MinHeapType),
 		))
@@ -424,7 +424,7 @@ func BenchmarkAgilePoolBurstLinkedList(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.LinkedListType),
 		))
@@ -470,7 +470,7 @@ func BenchmarkAgilePoolBurstRingQueue(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.RingQueueType),
 		))
@@ -516,7 +516,7 @@ func BenchmarkAgilePoolBurstTreap(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		pool := agilepool.NewPool(agilepool.NewConfig(
 			agilepool.WithCleanPeriod(500*time.Millisecond),
-			agilepool.WithTaskQueueSize(10000),
+			agilepool.WithTaskQueueSize(20000),
 			agilepool.WithWorkerNumCapacity(20000),
 			agilepool.WithIdleContainerType(agilepool.TreapType),
 		))

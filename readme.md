@@ -101,7 +101,7 @@ defer pool.Close()
 | `WithDrainHorizon` | `15ms` | Time the scaler aims to spend clearing the current backlog. The backlog-driven ramp-up target is `ceil(queuedTasks × serviceTime / drainHorizon)`, the number of workers that can finish the queued work within that time. Shorter horizons ramp up harder and cost more peak workers. |
 | `WithPanicHandler` | `nil` | Custom `func(task Task, recovered any, stack []byte)` invoked when a task panics, replacing the default log line. Defaults to logging with `SetLogger`. |
 
-> **Note**: `WithTaskQueueSize` controls the capacity of the internal handoff channel. Tasks beyond that capacity are stored in the dynamically growing chunked buffer.
+> **Note**: `WithTaskQueueSize` (default `20000`) controls the capacity of the internal handoff channel. With the default backpressure a submission that finds the queue full waits for room, so the queue size is the pool's burst window; `WithOverflowBuffer` stores those tasks in the chunked buffer instead and lets the submitter return immediately.
 
 ## Submitting Tasks
 

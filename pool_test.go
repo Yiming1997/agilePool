@@ -647,7 +647,7 @@ func TestTaskQueueSizeConfiguresHandoffCapacity(t *testing.T) {
 		size int64
 		want int
 	}{
-		{name: "default", want: 10000},
+		{name: "default", want: 20000},
 		{name: "custom", size: 7, want: 7},
 	}
 

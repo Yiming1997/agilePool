@@ -100,7 +100,7 @@ defer pool.Close()
 | `WithMaxZeroConsumeScaleStep` | `64` | 单次零消费扩容最多新增的 worker 数。 |
 | `WithDrainHorizon` | `15ms` | 清空当前积压的目标时间。积压驱动的爬坡目标为 `ceil(queuedTasks × serviceTime / drainHorizon)`，即能在该时间内干完排队任务所需的 worker 数。值越小爬坡越猛、峰值越高。 |
 
-> **注意**：`WithTaskQueueSize` 控制内部交接 channel 的容量。超过该容量的任务会进入动态增长的分块缓冲区。
+> **注意**：`WithTaskQueueSize`（默认 `20000`）控制内部交接 channel 的容量。默认背压下，队列满时的提交会等待空位，因此队列容量就是池子的突发窗口；启用 `WithOverflowBuffer` 才会把超出容量的任务放进分块缓冲区并让提交立即返回。
 
 ## 提交任务
 
