@@ -127,3 +127,76 @@ func TestStrictBackpressureUnblocksOnClose(t *testing.T) {
 	release.done()
 	p.Close()
 }
+// TestTrySubmitRejectsWhenQueueIsFull checks that TrySubmit reports saturation
+// instead of waiting, even on the blocking submit path.
+func TestTrySubmitRejectsWhenQueueIsFull(t *testing.T) {
+	p := NewPool(NewConfig(
+		WithWorkerNumCapacity(1),
+		WithTaskQueueSize(1),
+		WithTaskQueueShards(1),
+	))
+	defer p.Close()
+
+	release := newBPLatch()
+	started := newBPLatch()
+	if !p.TrySubmit(TaskFunc(func() error {
+		started.done()
+		release.wait()
+		return nil
+	})) {
+		t.Fatal("first TrySubmit was rejected")
+	}
+	started.wait()
+
+	// Fill the single queue slot, then the next TrySubmit has nowhere to go.
+	if !p.TrySubmit(TaskFunc(func() error { return nil })) {
+		t.Fatal("second TrySubmit was rejected")
+	}
+	if p.TrySubmit(TaskFunc(func() error { return nil })) {
+		t.Fatal("TrySubmit accepted a task with a full queue")
+	}
+
+	release.done()
+	p.Wait()
+}
+
+// TestBlockedSubmitterUnblockedByClose checks that a submitter waiting for
+// queue room is released by Close rather than being left behind.
+func TestBlockedSubmitterUnblockedByClose(t *testing.T) {
+	p := NewPool(NewConfig(
+		WithWorkerNumCapacity(1),
+		WithTaskQueueSize(1),
+		WithTaskQueueShards(1),
+	))
+
+	release := newBPLatch()
+	started := newBPLatch()
+	p.Submit(TaskFunc(func() error {
+		started.done()
+		release.wait()
+		return nil
+	}))
+	started.wait()
+	p.Submit(TaskFunc(func() error { return nil })) // fills the one slot
+
+	blocked := make(chan struct{})
+	go func() {
+		p.Submit(TaskFunc(func() error { return nil }))
+		close(blocked)
+	}()
+
+	// Give the submitter a moment to reach the wait, then close.
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-blocked:
+		t.Fatal("submit returned before Close while the queue was full")
+	default:
+	}
+	p.Close()
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not release the blocked submitter")
+	}
+	release.done()
+}

@@ -434,6 +434,13 @@ func (p *Pool) submit(ctx context.Context, task Task, block bool) bool {
 	// a handoff attempt that cannot succeed. Coalescing into the queue is
 	// enough; the buffer is only needed when the caller must not block.
 	if p.config.backpressureOnly {
+		if !block {
+			// TrySubmit must never wait: report the pool as saturated instead of
+			// parking the caller on the handoff queue.
+			p.done()
+			p.dispatchTaskRejectedFor(ctx, task)
+			return false
+		}
 		q = p.nextShard()
 		select {
 		case q <- task:
