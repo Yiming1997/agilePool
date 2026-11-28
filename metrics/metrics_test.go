@@ -292,6 +292,10 @@ func TestCollectorLifecycleWithBothDispatchers(t *testing.T) {
 func TestCollectorCancellationPanicAndOverflow(t *testing.T) {
 	p := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithWorkerNumCapacity(1), agilepool.WithTaskQueueSize(1),
+		// This test asserts the metrics of tasks buffered past the queue
+		// capacity; the default configuration applies backpressure on the
+		// handoff queue instead of buffering.
+		agilepool.WithOverflowBuffer(),
 		agilepool.WithPanicHandler(func(agilepool.Task, any, []byte) {}),
 	))
 	c := newTestCollector(t, p)
