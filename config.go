@@ -67,8 +67,10 @@ type Config struct {
 	// queue full waits for room instead of spilling into the overflow buffer.
 	// WithOverflowBuffer clears it. See WithOverflowBuffer for the trade-off.
 	backpressureOnly bool
-	drainHorizon             time.Duration
-	panicHandler             PanicHandler // custom task-panic handler (nil keeps default logging)
+	// scalingMode selects the formula the scaler uses to size the pool.
+	scalingMode  ScalingMode
+	drainHorizon time.Duration
+	panicHandler PanicHandler // custom task-panic handler (nil keeps default logging)
 }
 
 // ConfigOption mutates a Config while NewConfig is building it.
@@ -105,7 +107,7 @@ func NewConfig(opts ...ConfigOption) *Config {
 		backpressureOnly:         true,
 		zeroConsumeScaleInterval: defaultZeroConsumeScaleInterval,
 		maxZeroConsumeScaleStep:  defaultMaxZeroConsumeScaleStep,
-		drainHorizon:              defaultDrainHorizon,
+		drainHorizon:             defaultDrainHorizon,
 	}
 	for _, opt := range opts {
 		opt(config)
@@ -302,5 +304,42 @@ func WithDrainHorizon(d time.Duration) ConfigOption {
 func WithOverflowBuffer() ConfigOption {
 	return func(c *Config) {
 		c.backpressureOnly = false
+	}
+}
+
+// ScalingMode selects the formula the adaptive scaler uses to size the pool.
+type ScalingMode int
+
+const (
+	// ScalingBacklog is the default: the target is derived from the observed
+	// submit and consume rates, the outstanding backlog and the drain horizon.
+	// It reacts quickly to bursts, but the target grows with the queue depth,
+	// which is itself a function of how few workers are running.
+	ScalingBacklog ScalingMode = iota
+	// ScalingLittleLaw sizes the pool from Little's law: the workers needed are
+	// arrivalRate × serviceTime. The target contains no queue depth and no
+	// worker count, so a backlog that exists only because the pool is undersized
+	// cannot inflate it.
+	ScalingLittleLaw
+)
+
+// WithLittleLawScaling makes the adaptive scaler size the pool with Little's law
+// (arrivalRate × serviceTime) instead of the backlog heuristics.
+//
+// The difference matters when an external autoscaler (KEDA, HPA) divides the
+// pool's demand by a per-pod concurrency budget. The default target answers "how
+// many workers would clear this queue within drainHorizon", so a single
+// saturated pod reports a demand proportional to its own queue and the
+// autoscaler provisions far more pods than the arrival rate needs (measured: 16
+// pods for a load Little's law sizes at 3). The Little's law target reports the
+// workers the current arrival rate actually occupies, so the same budget yields
+// the right replica count.
+//
+// The trade-off is burst behaviour: without the drain target the pool grows to
+// the arrival rate rather than to "clear the queue within drainHorizon", so a
+// sudden burst is absorbed more slowly.
+func WithLittleLawScaling() ConfigOption {
+	return func(c *Config) {
+		c.scalingMode = ScalingLittleLaw
 	}
 }
