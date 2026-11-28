@@ -684,6 +684,36 @@ func (p *Pool) queuedTasks() int64 {
 	return int64(p.GetTaskQueueLen()) + p.taskBuf.Len()
 }
 
+// littleLawTarget implements Little's law for the pool's worker count:
+//
+//	target = ceil(arrivalRate × serviceTime)
+//
+// where arrivalRate is the submissions observed in the last statistics window,
+// scaled to per-second.
+func (p *Pool) littleLawTarget(submitMed float64, serviceTime time.Duration, running, backlog int64) int64 {
+	if serviceTime <= 0 || submitMed <= 0 {
+		if running == 0 && backlog > 0 {
+			// Cold start: nothing has finished, so there is no service time to
+			// multiply. Open the pool to the backlog and let the measurement
+			// take over on the next tick.
+			return backlog
+		}
+		// No measurement yet: keep what is running rather than shrinking.
+		return running
+	}
+	window := p.config.statsSamplePeriod.Seconds()
+	if window <= 0 {
+		return running
+	}
+	target := int64(math.Ceil(submitMed / window * serviceTime.Seconds()))
+	if target < running {
+		// The pool never kills workers, so asking for fewer than are running
+		// would only stop growth for a tick.
+		target = running
+	}
+	return target
+}
+
 func (p *Pool) scaleIfNeeded() {
 	submitMed, consumeMed, exitMed := p.getMedianRates()
 	running := atomic.LoadInt64(&p.runningWorkersNum)
@@ -791,6 +821,20 @@ func (p *Pool) scaleIfNeeded() {
 				target = drainTarget
 			}
 		}
+	}
+
+	// Little's law mode replaces every target above with
+	//
+	//	target = ceil(arrivalRate × serviceTime)
+	//
+	// because the backlog-driven targets answer a different question: "how many
+	// workers would clear the current queue within the drain horizon". That
+	// number grows with the queue, and the queue grows when the pool is too
+	// small, so an autoscaler that divides it by a per-pod budget provisions far
+	// more pods than the arrival rate needs. The Little's law target contains
+	// neither the queue depth nor the worker count, so it cannot feed back.
+	if p.config.scalingMode == ScalingLittleLaw {
+		target = p.littleLawTarget(submitMed, serviceTime, running, totalBacklog)
 	}
 
 	// A pool never needs more workers than there are pending tasks: a worker
