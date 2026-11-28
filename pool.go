@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultCleanPeriod          = 500 * time.Millisecond
-	defaultTaskQueueSize        = 10000
+	defaultTaskQueueSize        = 20000
 	defaultMaxWorkerNumCapacity = math.MaxInt64
 	defaultWorkMode             = BLOCK
 	defaultIdleContainerType    = LinkedListType
