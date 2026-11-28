@@ -402,6 +402,23 @@ The pool already knows how many workers it wants. `GetScalerTarget()` and
 scaler reads it straight from the pod endpoints — no Prometheus server and no
 metrics adapter involved.
 
+> **Use `WithLittleLawScaling()` when the reported demand drives replicas.**
+> The default (`ScalingBacklog`) grows its target with the queue depth, and the
+> queue depth grows when the pool is undersized. A single saturated pod then
+> reports a demand proportional to its own backlog, so KEDA provisions far more
+> pods than the arrival rate needs: measured with a 100-worker pod and a
+> 100-worker budget, a load that Little's law sizes at 3 pods made one pod report
+> 11.5–16 pods. `WithLittleLawScaling()` reports `arrivalRate × serviceTime` plus
+> a saturating bump instead; the same cluster simulation climbs 1 → 3 pods
+> instead of 1 → 11.
+>
+> ```go
+> pool := agilepool.NewPool(agilepool.NewConfig(
+>     agilepool.WithWorkerNumCapacity(1000),
+>     agilepool.WithLittleLawScaling(), // required when demand drives replicas
+> ))
+> ```
+
 ```yaml
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -426,10 +443,16 @@ spec:
 
 `targetValue` is the concurrency budget of one pod: how many workers a pod
 should carry before another pod is added. **It must stay below the pool's
-worker capacity.** Both concurrency metrics are clamped to that capacity, so
-a saturated pod reports exactly its ceiling; with a budget equal to the
-capacity the summed value can never exceed the number of pods already
-running, and the deployment never scales out.
+worker capacity**, and the capacity itself should stay below the container's
+CPU budget for the task mix. With a budget equal to the capacity every pod runs
+at exactly its ceiling, so the deployment keeps one pod of headroom and never
+settles.
+
+With `WithLittleLawScaling()` the published demand is allowed to exceed the
+worker capacity while the pod is saturated with work queued (`running +
+running/2`): that is the signal KEDA needs to add a replica. Without it, a
+saturated pod and a correctly sized pod report the same demand and the
+deployment never scales out.
 
 This targets short IO-bound tasks. While such a task waits, the pod burns
 almost no CPU, so a CPU-based HPA never scales out even while the backlog

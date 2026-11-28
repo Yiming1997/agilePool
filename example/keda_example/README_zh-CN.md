@@ -106,6 +106,14 @@ kubectl -n default run load --rm -it --image=curlimages/curl --restart=Never -- 
 | `agilepool_workers_target` | 并发度 | 任何 agilePool v2 版本都能用。受上限截断，扩容步长被量化成 `capacity / budget` |
 | `agilepool_tasks_queued` | 任务数 | 粗粒度兜底。单位是任务数，同样的 budget 在 1ms 和 100ms 的任务下含义完全不同 |
 
+> **只要这些指标驱动副本数，Pod 里就必须启用 `WithLittleLawScaling()`。**
+> 默认的扩缩逻辑按积压算，而积压是「当前副本数」的函数：单个饱和 Pod 报出的
+> demand 与它自己的队列成正比，自动扩缩器就会扩出远超到达率所需的 Pod。实测单
+> Pod（100 worker、预算 100）在 6000 任务/秒 × 50ms（Little 定律需要 3 个 Pod）
+> 的负载下，50 个并发生产者时报出 11.5 个 Pod 的 demand，500 个时报出 16 个。
+> 启用 `WithLittleLawScaling()` 后 demand 变成 `到达率 × 服务时长` 加一个饱和
+> 增量，同一套集群模拟从 1 个 Pod 爬到 3 个。
+
 两个并发度指标的区别只在 Pod 饱和时才显现。`workers_target` 被截断到
 `POOL_WORKERS`，满载的 Pod 只能报出上限，总和就只能以 `capacity / budget`
 为步长往上跳。`workers_demand` 在截断之前发布，报的是真实需求。

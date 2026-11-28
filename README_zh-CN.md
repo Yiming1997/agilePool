@@ -390,6 +390,21 @@ queued 是并发环境下的队列占用快照，不能当作全部“尚未开�
 把这个决策发布出来，KEDA 内置的 `metrics-api` scaler 可以直接从各个 Pod 的
 端点读它——既不需要 Prometheus，也不需要自定义指标适配器。
 
+> **让 demand 驱动副本数时，必须启用 `WithLittleLawScaling()`。**
+> 默认的 `ScalingBacklog` 目标会随队列深度增长，而队列深度又随副本不足而增长，
+> 于是单个饱和 Pod 报出的 demand 与它自己的积压成正比，KEDA 会扩出远超到达率
+> 所需的 Pod：实测单 Pod（100 worker、预算 100）在 Little 定律只需要 3 个 Pod 的
+> 负载下，报出了 11.5–16 个 Pod。`WithLittleLawScaling()` 改为报
+> `到达率 × 服务时长` 再加一个饱和增量，同一套集群模拟下**从 1 个 Pod 爬到 3 个**，
+> 而不是冲到 11 个。
+>
+> ```go
+> pool := agilepool.NewPool(agilepool.NewConfig(
+>     agilepool.WithWorkerNumCapacity(1000),
+>     agilepool.WithLittleLawScaling(), // 让 demand 驱动副本时必须启用
+> ))
+> ```
+
 ```yaml
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -413,9 +428,13 @@ spec:
 ```
 
 `targetValue` 是单个 Pod 的并发预算：一个 Pod 扛多少并发之后再加一个 Pod。
-**它必须小于池的 worker 上限。** 两个并发度指标都被这个上限截断，饱和的 Pod
-只能报出自己的上限；如果 budget 等于上限，总和永远不可能超过已经运行的 Pod
-数，于是**永远不会扩容**。
+**它必须小于池的 worker 上限**，而 worker 上限本身应当低于容器的 CPU 预算所
+能支撑的并发。如果 budget 等于上限，每个 Pod 都正好跑在上限上，部署会永远保留
+一个 Pod 的余量、无法收敛。
+
+启用 `WithLittleLawScaling()` 后，Pod 在「顶到上限且还有任务排队」时允许报出
+超过 worker 上限的 demand（`running + running/2`）——这正是 KEDA 扩容所需的信号。
+没有它，一个饱和的 Pod 和一个大小正好的 Pod 报出同样的 demand，部署永远不会扩容。
 
 这个方案针对的是**短时 IO 密集任务**。这类任务等待期间几乎不消耗 CPU，所以
 即便队列在堆积，CPU 型 HPA 也不会扩容：在 kind 集群上实测，两个 Pod 把队列从

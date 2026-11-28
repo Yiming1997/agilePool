@@ -118,6 +118,16 @@ scale-down stabilisation window.
 | `agilepool_workers_target` | concurrency | works with any agilePool v2 release. Clamped to the capacity, so the scale-out step is quantised to `capacity / budget` |
 | `agilepool_tasks_queued` | tasks | coarse fallback. The unit is a task count, so the same budget means something different for 1 ms and for 100 ms tasks |
 
+**Enable `WithLittleLawScaling()` in the pod whenever one of these metrics drives
+the replica count.** The default scaler sizes the pool from the backlog, and the
+backlog is a function of how many pods are running: a single saturated pod
+reports a demand proportional to its own queue, so the autoscaler provisions far
+more pods than the arrival rate needs. Measured with a 100-worker pod and a
+100-worker budget, a 6000 tasks/s load of 50 ms tasks (Little's law: 3 pods) made
+one pod report 11.5 pods' worth of demand with 50 producer goroutines and 16 with
+500. With `WithLittleLawScaling()` the demand is `arrivalRate × serviceTime` plus
+a saturating bump, and the same cluster simulation climbs 1 → 3 pods.
+
 The difference between the two concurrency metrics is only visible when a
 pod is saturated. `workers_target` is clamped to `POOL_WORKERS`, so a full
 pod reports the ceiling and the summed value can only grow in steps of

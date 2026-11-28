@@ -54,6 +54,12 @@ func main() {
 	pool := agilepool.NewPool(agilepool.NewConfig(
 		agilepool.WithWorkerNumCapacity(workers),
 		agilepool.WithTaskQueueSize(100000),
+		// The reported demand drives the replica count, so size the pool from
+		// Little's law (arrival rate x service time) instead of the backlog
+		// heuristics: the backlog target grows with the queue, which grows when
+		// the pool is undersized, so dividing it by the per-pod budget makes an
+		// autoscaler overshoot by several times.
+		agilepool.WithLittleLawScaling(),
 	))
 	defer pool.Close()
 
